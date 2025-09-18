@@ -21,3 +21,5 @@ requests
 regex
 tqdm
 python-dotenv>=1.0.0
+grpcio>=1.63.2
+
