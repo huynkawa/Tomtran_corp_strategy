@@ -16,10 +16,9 @@ pytesseract
 docx2txt
 pdfplumber
 numpy
-typing_extensions
 requests
 regex
 tqdm
 python-dotenv>=1.0.0
 grpcio>=1.63.2
-
+# force rebuild
