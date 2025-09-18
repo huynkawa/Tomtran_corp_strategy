@@ -1,5 +1,4 @@
 streamlit
-python-dotenv
 openai
 langchain
 langchain-community
@@ -21,3 +20,4 @@ typing_extensions
 requests
 regex
 tqdm
+python-dotenv>=1.0.0
