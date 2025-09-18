@@ -8,6 +8,9 @@ from src.prompt_loader import load_prompts, render_system_prompt, list_profiles
 from langchain_community.vectorstores import Chroma
 from src.config import make_embeddings
 
+# ✅ Khởi tạo client 1 lần (SDK mới tự đọc OPENAI_API_KEY từ env hoặc secrets.toml)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 def main():
     st.set_page_config(page_title="TOMTRANCHATBOT", layout="wide")
     st.title("TOMTRANCHATBOT")
@@ -89,7 +92,6 @@ def main():
         st.session_state.history.append(("user", user_msg))
 
     if st.session_state.history:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         messages = [{"role": "system", "content": system_prompt}]
         debug_block = ""
 
