@@ -1,0 +1,15 @@
+{
+  // Chỉ định interpreter Python mặc định
+  "python.defaultInterpreterPath": "D:/Conda_Evn/Strategy/python.exe",
+
+  // Tạo profile terminal riêng để kích hoạt môi trường Conda
+  "terminal.integrated.profiles": {
+    "CondaStrategy": {
+      "path": "C:/Users/huynkawa/anaconda3/Scripts/activate",
+      "args": ["D:/Conda_Evn/Strategy"]
+    }
+  },
+
+  // Đặt terminal mặc định là CondaStrategy
+  "terminal.integrated.defaultProfile.windows": "CondaStrategy"
+}
