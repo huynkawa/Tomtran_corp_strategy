@@ -1,0 +1,6 @@
+langchain
+langchain-openai
+chromadb
+sentence-transformers
+streamlit
+python-dotenv
