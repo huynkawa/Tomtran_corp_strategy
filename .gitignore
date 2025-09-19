@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Local data & generated artifacts
+data/
+inputs/
+vector_store/
+outputs/
+charts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs / DB
+*.log
+*.db
