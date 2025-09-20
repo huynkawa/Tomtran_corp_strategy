@@ -1,5 +1,6 @@
 import os
 import io
+import shutil
 from typing import List
 from dotenv import load_dotenv
 from langchain.schema import Document
@@ -15,15 +16,25 @@ import pytesseract
 from PIL import Image
 import fitz  # PyMuPDF để đọc PDF scan
 
+# Thêm import cho Chroma & embeddings
+from langchain_chroma import Chroma
+from src.config import make_embeddings
+
 # === Load env & setup dirs ===
 load_dotenv()
 DATA_DIR   = os.getenv("DATA_DIR", "data")
 INPUT_DIR  = os.getenv("INPUT_DIR", "inputs")
 OUT_DIR    = os.getenv("OUTPUT_DIR", "outputs")
 OCR_DIR    = os.path.join(OUT_DIR, "ocr_texts")
+VECTOR_DIR = os.getenv("VECTOR_DIR", "vector_store")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(OCR_DIR, exist_ok=True)
+
+# === Clean vector store trước khi build ===
+if os.path.exists(VECTOR_DIR):
+    shutil.rmtree(VECTOR_DIR)
+    print(f"🗑️ Đã xoá vector store cũ: {VECTOR_DIR}")
 
 # === Danh sách file rác cần bỏ qua ===
 SKIP_FILES = {"thumbs.db", ".ds_store", ".gitkeep", ".gitignore"}
@@ -31,7 +42,6 @@ SKIP_PREFIX = ("~$", ".")  # bỏ qua file bắt đầu bằng ~ hoặc .
 
 
 def is_skip_file(file: Path) -> bool:
-    """Check nếu file là file rác/tạm thì bỏ qua"""
     name = file.name.lower()
     if name in SKIP_FILES:
         return True
@@ -41,7 +51,6 @@ def is_skip_file(file: Path) -> bool:
 
 
 def save_ocr_text(file_path: str, text: str):
-    """Lưu text OCR ra file .txt trong outputs/ocr_texts/"""
     base_name = os.path.basename(file_path)
     txt_name = os.path.splitext(base_name)[0]
     txt_path = os.path.join(OCR_DIR, txt_name + ".txt")
@@ -51,7 +60,6 @@ def save_ocr_text(file_path: str, text: str):
 
 
 def ocr_pdf(file_path: str) -> str:
-    """OCR cho PDF scan, trả về text"""
     text_content = []
     try:
         pdf_doc = fitz.open(file_path)
@@ -104,7 +112,6 @@ def load_documents(dir_path: str) -> List[Document]:
             if is_skip_file(file):
                 continue
             if file.suffix.lower() in [".txt", ".md"]:
-                # bỏ qua file OCR logs để tránh vòng lặp
                 if OCR_DIR in str(file):
                     continue
                 docs += TextLoader(str(file), encoding="utf-8").load()
@@ -152,7 +159,6 @@ def chunk_documents(docs: List[Document], chunk_size=900, chunk_overlap=120) -> 
     return all_chunks
 
 
-
 if __name__ == "__main__":
     sources = []
     for p in (DATA_DIR, INPUT_DIR):
@@ -161,4 +167,20 @@ if __name__ == "__main__":
 
     with open(os.path.join(OUT_DIR, "ingest_stats.txt"), "w", encoding="utf-8") as f:
         f.write(f"Documents: {len(sources)}\nChunks: {len(chunks)}\n")
-    print(f"[ingest] Documents={len(sources)} | Chunks={len(chunks)} (log tại {OUT_DIR}/ingest_stats.txt)")
+
+    print(f"[ingest] Documents={len(sources)} | Chunks={len(chunks)}")
+
+
+# === Build lại Chroma từ đầu ===
+vectordb = Chroma.from_documents(
+    documents=chunks,
+    embedding=make_embeddings(),
+    persist_directory=VECTOR_DIR
+)
+
+# Kiểm tra số vector đã lưu
+try:
+    count = getattr(vectordb, "_collection").count()
+    print(f"✅ Đã lưu {count} vectors vào vector store: {VECTOR_DIR}")
+except Exception:
+    print("⚠️ Không thể lấy số lượng vector, nhưng đã lưu thành công.")

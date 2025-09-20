@@ -1,25 +1,20 @@
 from typing import Any
 import os
-import src.env  # NEW: đảm bảo biến môi trường đã nạp
+import src.env  # đảm bảo biến môi trường đã được nạp
 
-PERSIST_DIR = os.getenv("PERSIST_DIR", "vector_store")
+# --- Chroma persist dir ---
+PERSIST_DIR = os.getenv("VECTOR_STORE_DIR", "vector_store")
+
+# --- Model embedding mặc định (OpenAI) ---
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
 
 def make_embeddings() -> Any:
-    use_local = os.getenv("USE_LOCAL_EMB", "0") == "1"
-    batch = int(os.getenv("EMBED_BATCH_SIZE", "16"))
-
-    if use_local:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        model_name = os.getenv("LOCAL_EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-        print(f"[config] Using LOCAL embeddings: {model_name} | batch={batch}")
-        return HuggingFaceEmbeddings(model_name=model_name)
-
-    import openai
+    """
+    Luôn dùng OpenAI Embeddings (không còn fallback HuggingFace).
+    """
     from langchain_openai import OpenAIEmbeddings
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    print(f"[config] Using OpenAI embeddings: {EMBED_MODEL} | batch={batch}")
+    batch = int(os.getenv("EMBED_BATCH_SIZE", "16"))
+    print(f"[config] 🚀 Forcing OpenAI embeddings: {EMBED_MODEL} | batch={batch}")
     return OpenAIEmbeddings(model=EMBED_MODEL, chunk_size=batch)
-

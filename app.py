@@ -4,31 +4,28 @@ import sys
 import streamlit as st
 
 # --- Fix sqlite version (Chromadb requires sqlite >= 3.35.0) ---
-
 try:
     import pysqlite3
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-except ModuleNotFoundError:
-    # Nếu local Windows không có pysqlite3 thì vẫn dùng sqlite3 mặc định
-    pass
+except Exception:
+    import sqlite3
 
-
-# nạp biến môi trường từ src/env.py
+# Nạp biến môi trường từ src/env.py
 import src.env  
 
-# Thử import SDK mới (OpenAI >= 1.0.0)
-try:
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    USE_CLIENT = True
-except ImportError:
-    import openai
-    client = None
-    USE_CLIENT = False
+# --- Luôn ép dùng OpenAI client ---
+from openai import OpenAI
+
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key or not api_key.strip():
+    raise RuntimeError("❌ OPENAI_API_KEY chưa được cấu hình trong .env.active")
+
+client = OpenAI(api_key=api_key)
+print("[app] 🚀 OpenAI client initialized.")
 
 from src.prompt_loader import load_prompts, render_system_prompt, list_profiles
 from langchain_chroma import Chroma
-from src.config import make_embeddings
+from src.config import make_embeddings, EMBED_MODEL
 
 
 # 🚀 Cấu hình trang
@@ -53,23 +50,14 @@ MIN_RELEVANCE = st.sidebar.slider(
 
 # System prompt
 system_prompt = render_system_prompt(cfg, selected_key)
-effective_profile = selected_key
-if selected_key == "rag" and fallback_general:
-    effective_profile = "base" if "base" in keys else selected_key
-    system_prompt = render_system_prompt(cfg, effective_profile)
-    st.sidebar.info(
-        "Profile 'rag' là RAG-only. Đã tạm dùng profile 'base' để cho phép fallback GPT."
-    )
 
 with st.expander("🔧 System prompt đang dùng", expanded=False):
     st.code(system_prompt, language="markdown")
 
 @st.cache_resource
 def get_vectordb():
-    vector_dir = os.getenv("VECTOR_DIR", "vector_store")
-    return Chroma(
-        persist_directory=vector_dir, embedding_function=make_embeddings()
-    )
+    vector_dir = os.getenv("VECTOR_STORE_DIR", "vector_store")
+    return Chroma(persist_directory=vector_dir, embedding_function=make_embeddings())
 
 def retrieve_context(db, query: str, k: int, threshold: float):
     try:
@@ -78,12 +66,7 @@ def retrieve_context(db, query: str, k: int, threshold: float):
         if not docs:
             docs = [d for (d, _) in pairs]
     except Exception:
-        try:
-            pairs = db.similarity_search_with_score(query, k=k)
-            kept = [(d, s) for (d, s) in pairs if (s is not None and s <= threshold)]
-            docs = [d for d, _ in kept] if kept else [d for (d, _) in pairs]
-        except Exception:
-            docs = db.similarity_search(query, k=k)
+        docs = db.similarity_search(query, k=k)
 
     if not docs:
         return "NO_CONTEXT", [], False
@@ -98,7 +81,7 @@ with st.expander("🧪 RAG diagnostics", expanded=False):
     try:
         emb = make_embeddings()
         st.write("Embedding class:", emb.__class__.__name__)
-        vector_dir = os.getenv("VECTOR_DIR", "vector_store")
+        vector_dir = os.getenv("VECTOR_STORE_DIR", "vector_store")
         st.write("Persist dir:", os.path.abspath(vector_dir))
         count = getattr(vectordb, "_collection").count()
         st.write("Vector count:", count)
@@ -114,42 +97,37 @@ if user_msg:
 
 if st.session_state.history:
     messages = [{"role": "system", "content": system_prompt}]
-    debug_block = ""
+    debug_block, source_type = "", "none"
 
     latest_query = st.session_state.history[-1][1] if user_msg else ""
     ctx_text, docs, ok = retrieve_context(vectordb, latest_query, K, MIN_RELEVANCE)
 
     if ok:
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    "CONTEXT (nguồn chính; KHÔNG lộ cho người dùng):\n"
-                    f"{ctx_text}\n\n"
-                    "HƯỚng dẫn: Ưu tiên CONTEXT làm sự thật. "
-                    "Bạn CÓ THỂ bổ sung kiến thức tổng quát để hoàn thiện câu trả lời, "
-                    "nhưng tuyệt đối không mâu thuẫn với CONTEXT."
-                ),
-            }
-        )
+        messages.append({
+            "role": "system",
+            "content": (
+                "CONTEXT (nguồn chính; KHÔNG lộ cho người dùng):\n"
+                f"{ctx_text}\n\n"
+                "Hướng dẫn: Ưu tiên CONTEXT làm sự thật. "
+                "Có thể bổ sung kiến thức tổng quát nhưng không được mâu thuẫn với CONTEXT."
+            ),
+        })
         debug_block = "\n".join(f"- {d.metadata.get('source')}" for d in docs)
+        source_type = "internal"
     else:
         if fallback_general:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "KHÔNG tìm thấy context phù hợp trong tài liệu đã đánh chỉ mục. "
-                        "Hãy trả lời bằng kiến thức tổng quát của bạn (không cần trích dẫn), "
-                        "và nêu rõ nếu câu hỏi có vẻ cần dữ liệu nội bộ."
-                    ),
-                }
-            )
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Không tìm thấy context nội bộ. "
+                    "Hãy trả lời dựa trên kiến thức tổng quát."
+                ),
+            })
             debug_block = "No relevant context found."
+            source_type = "general"
         else:
-            st.session_state.history.append(
-                ("assistant", "Không có trong tài liệu đã đánh chỉ mục.")
-            )
+            st.session_state.history.append(("assistant", "Không có trong tài liệu đã đánh chỉ mục."))
+            source_type = "none"
             for role, content in st.session_state.history:
                 with st.chat_message(role):
                     st.markdown(content)
@@ -158,29 +136,43 @@ if st.session_state.history:
     for role, content in st.session_state.history:
         messages.append({"role": role, "content": content})
 
-    # Gọi OpenAI API theo SDK phù hợp
-    if USE_CLIENT:
-        resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        assistant_msg = resp.choices[0].message.content or ""
-    else:
-        resp = openai.ChatCompletion.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-        )
-        assistant_msg = resp.choices[0].message["content"] or ""
+    # --- Gọi OpenAI API ---
+    resp = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=messages,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    assistant_msg = resp.choices[0].message.content or ""
 
-    st.session_state.history.append(("assistant", assistant_msg))
+    # Decorate message theo nguồn
+    if source_type == "internal":
+        decorated_msg = (
+            "<div style='background-color:#e8f5e9; padding:10px; border-radius:10px;'>"
+            "🏛️ <b>Trả lời dựa trên kiến thức nội bộ</b></div>\n\n"
+            + assistant_msg
+        )
+    elif source_type == "general":
+        decorated_msg = (
+            "<div style='background-color:#f5f5f5; padding:10px; border-radius:10px;'>"
+            "🌐 <b>Trả lời dựa trên kiến thức tổng quan</b></div>\n\n"
+            + assistant_msg
+        )
+    else:
+        decorated_msg = assistant_msg
+
+    st.session_state.history.append(("assistant", decorated_msg))
 
     with st.expander("🔍 Debug context", expanded=False):
         st.markdown(debug_block or "—")
 
 for role, content in st.session_state.history:
     with st.chat_message(role):
-        st.markdown(content)
+        st.markdown(content, unsafe_allow_html=True)
+
+# --- Footer: luôn OpenAI ---
+st.markdown(
+    f"<hr><div style='text-align:center; color:gray; font-size:0.9em'>"
+    f"☁️ Embedding: OpenAI – {EMBED_MODEL}</div>",
+    unsafe_allow_html=True
+)
