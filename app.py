@@ -1,6 +1,17 @@
 # app.py (root level)
 import os
+import sys
 import streamlit as st
+
+# --- Fix sqlite version (Chromadb requires sqlite >= 3.35.0) ---
+
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ModuleNotFoundError:
+    # Nếu local Windows không có pysqlite3 thì vẫn dùng sqlite3 mặc định
+    pass
+
 
 # nạp biến môi trường từ src/env.py
 import src.env  
