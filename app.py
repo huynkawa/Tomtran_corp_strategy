@@ -27,7 +27,7 @@ except ImportError:
     USE_CLIENT = False
 
 from src.prompt_loader import load_prompts, render_system_prompt, list_profiles
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from src.config import make_embeddings
 
 
