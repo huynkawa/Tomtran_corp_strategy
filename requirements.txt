@@ -1,20 +1,33 @@
+# --- Core app ---
 streamlit
 openai
+python-dotenv
+
+# --- LangChain ecosystem ---
 langchain
 langchain-community
 langchain-chroma
-langchain-huggingface
 langchain-openai
-python-dotenv
+langchain-huggingface
+
+# --- Vector DB fix (Chroma + SQLite) ---
+chromadb==0.5.0
+pysqlite3-binary
+
+# --- Data processing ---
 pandas
 numpy
-pdfplumber
+
+# --- PDF / OCR handling ---
 pymupdf
 pypdf
-pytesseract
+pdfplumber
 camelot-py[cv]
 pillow
-scikit-learn
+pytesseract
+
+# --- Embeddings / Transformers ---
 tiktoken
 sentence-transformers
 transformers
+scikit-learn
