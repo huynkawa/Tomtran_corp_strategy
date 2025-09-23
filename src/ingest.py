@@ -51,6 +51,7 @@ def ocr_pdf(file_path: str) -> str:
     return "\n".join(text_content)
 
 
+
 def load_documents(dir_path: str) -> List[Document]:
     docs: List[Document] = []
     if not os.path.isdir(dir_path):

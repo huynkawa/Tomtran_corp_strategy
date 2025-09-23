@@ -1,0 +1,141 @@
+synonyms:
+  # Vốn chủ sở hữu
+  equity: ["Vốn chủ sở hữu", "Von chu", "VON CHU", "Von chu so huu",
+           "Owner’s equity", "Equity", "Share capital"]
+
+  # Nợ ngắn hạn
+  current_liabilities: ["Nợ ngắn hạn", "No ngan han", "NO NGAN HAN",
+                        "Short-term liabilities", "Current liabilities"]
+
+  # Nợ dài hạn
+  long_term_liabilities: ["Nợ dài hạn", "No dai han", "NO DAI HAN",
+                          "Long-term liabilities"]
+
+  # Tổng nợ
+  total_liabilities: ["Tổng nợ phải trả", "Tong no phai tra", "No phai tra",
+                      "TOTAL LIABILITIES", "Total liabilities"]
+
+  # Tài sản ngắn hạn
+  current_assets: ["Tài sản ngắn hạn", "TAI SAN ngan han", "Tai san ngan han",
+                   "Current assets", "Current asset"]
+
+  # Tổng tài sản
+  total_assets: ["Tổng tài sản", "Tong tai san", "TAI SAN", "Total assets"]
+
+  # Doanh thu
+  revenue: ["Doanh thu thuần", "Doanh thu", "Doanh thu thuan hoat dong kinh doanh",
+            "REVENUE", "Net revenue"]
+
+  # Giá vốn hàng bán
+  cogs: ["Giá vốn hàng bán", "Gia von hang ban", "COGS", "Cost of goods sold"]
+
+  # Hàng tồn kho
+  inventory: ["Hàng tồn kho", "Hang ton kho", "Inventory"]
+
+  # Lợi nhuận sau thuế
+  net_income: ["Lợi nhuận sau thuế", "LOI NHUAN SAU THUE", "Loi nhuan",
+               "LỢI NHUẬN", "Net profit after tax", "Net income"]
+
+  # Lợi nhuận gộp
+  gross_profit: ["Lợi nhuận gộp", "LOI NHUAN GOP", "Gross profit"]
+
+  # EBIT
+  ebit: ["Lợi nhuận thuần từ hoạt động kinh doanh", "EBIT", "Operating profit"]
+
+  # Tiền mặt
+  cash: ["Tiền và tương đương tiền", "Tien va tuong duong tien",
+         "Cash and cash equivalents"]
+
+  # Lưu chuyển tiền thuần từ HĐKD
+  operating_cash_flow: ["Lưu chuyển tiền thuần từ hoạt động kinh doanh",
+                        "Operating cash flow", "Cash flow from operations"]
+
+  # Số cổ phiếu
+  shares: ["Số cổ phiếu lưu hành", "So co phieu", "Shares outstanding"]
+
+  # Giá cổ phiếu
+  share_price: ["Giá cổ phiếu", "Gia co phieu", "Share price",
+                "Market price per share"]
+
+  # BVPS
+  bvps: ["Giá trị sổ sách trên mỗi cổ phiếu", "Book value per share", "BVPS"]
+
+  # ---- Các từ khóa OCR thường gặp cho cột số ----
+  col_end: ["Số cuối năm", "So cuoi nam", "onV S6 cuoi nam", "Nam nay",
+            "End of year", "Year end", "Ending balance"]
+
+  col_begin: ["Số đầu năm", "So dau nam", "Nam truoc", "Nam truroc",
+              "Beginning of year", "Opening balance"]
+
+ratios:
+  - name: Current Ratio
+    numerator: ["current_assets"]
+    denominator: ["current_liabilities"]
+
+  - name: Quick Ratio
+    numerator: ["current_assets"]
+    denominator: ["current_liabilities"]
+
+  - name: Cash Ratio
+    numerator: ["cash"]
+    denominator: ["current_liabilities"]
+
+  - name: Debt to Equity
+    numerator: ["total_liabilities"]
+    denominator: ["equity"]
+
+  - name: Debt Ratio
+    numerator: ["total_liabilities"]
+    denominator: ["total_assets"]
+
+  - name: Long-term Debt to Equity
+    numerator: ["long_term_liabilities"]
+    denominator: ["equity"]
+
+  - name: Asset Turnover
+    numerator: ["revenue"]
+    denominator: ["total_assets"]
+
+  - name: Inventory Turnover
+    numerator: ["cogs"]
+    denominator: ["inventory"]
+
+  - name: Receivables Turnover
+    numerator: ["revenue"]
+    denominator: ["current_assets"]
+
+  - name: ROA
+    numerator: ["net_income"]
+    denominator: ["total_assets"]
+
+  - name: ROE
+    numerator: ["net_income"]
+    denominator: ["equity"]
+
+  - name: Net Profit Margin
+    numerator: ["net_income"]
+    denominator: ["revenue"]
+
+  - name: Gross Profit Margin
+    numerator: ["gross_profit"]
+    denominator: ["revenue"]
+
+  - name: Operating Margin
+    numerator: ["ebit"]
+    denominator: ["revenue"]
+
+  - name: Operating Cash Flow Ratio
+    numerator: ["operating_cash_flow"]
+    denominator: ["current_liabilities"]
+
+  - name: EPS
+    numerator: ["net_income"]
+    denominator: ["shares"]
+
+  - name: P/E
+    numerator: ["share_price"]
+    denominator: ["eps"]
+
+  - name: P/B
+    numerator: ["share_price"]
+    denominator: ["bvps"]

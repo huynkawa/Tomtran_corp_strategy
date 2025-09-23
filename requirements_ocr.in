@@ -1,0 +1,12 @@
+# Gói chính để OCR PDF scan
+paddleocr==2.7.0.3
+
+# Chuyển PDF sang ảnh
+pdf2image
+
+# Thư viện đọc/ghi file Excel, CSV
+openpyxl
+pandas
+
+# Nếu muốn dùng thêm OCR bằng Tesseract (dự phòng)
+pytesseract

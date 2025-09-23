@@ -1,0 +1,10 @@
+
+text_corrections:
+  - wrong: "tai san"
+    right: "TÀI SẢN"
+  - wrong: "loi nhuan"
+    right: "LỢI NHUẬN"
+  - wrong: "bao hiem"
+    right: "BẢO HIỂM"
+  - wrong: "von chu"
+    right: "VỐN CHỦ"

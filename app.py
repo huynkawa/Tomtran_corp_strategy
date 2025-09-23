@@ -2,6 +2,9 @@
 import os
 import sys
 import streamlit as st
+import src.env  # sẽ tự nạp OPENAI_API_KEY
+from src.rag_chain import rag_answer
+
 
 # --- Fix sqlite version (Chromadb requires sqlite >= 3.35.0) ---
 try:
@@ -75,6 +78,12 @@ def retrieve_context(db, query: str, k: int, threshold: float):
     return ctx, docs, True
 
 vectordb = get_vectordb()
+# Khởi tạo retriever từ vectordb
+retriever = vectordb.as_retriever(search_kwargs={"k": K})
+
+# Khởi tạo LLM wrapper (LangChain)
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=temperature)
 
 # Debug diagnostics
 with st.expander("🧪 RAG diagnostics", expanded=False):
@@ -136,14 +145,18 @@ if st.session_state.history:
     for role, content in st.session_state.history:
         messages.append({"role": role, "content": content})
 
-    # --- Gọi OpenAI API ---
-    resp = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        messages=messages,
-        temperature=temperature,
-        top_p=top_p,
+
+    assistant_msg = rag_answer(
+        query=latest_query,
+        retriever=retriever,
+        llm=llm,
+        client=client,           # truyền client từ app
+        use_fallback=fallback_general,
+        threshold=MIN_RELEVANCE,
+        k=K
     )
-    assistant_msg = resp.choices[0].message.content or ""
+
+
 
     # Decorate message theo nguồn
     if source_type == "internal":
