@@ -16,7 +16,7 @@ pysqlite3-binary
 
 # --- Data processing ---
 pandas
-numpy
+numpy<2.0
 
 # --- PDF / OCR handling ---
 pymupdf
