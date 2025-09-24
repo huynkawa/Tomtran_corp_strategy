@@ -1,4 +1,6 @@
-import os, shutil, subprocess, io
+# 📁 src/build_index_raw_data.py
+
+import os, shutil, subprocess, io, json
 from pathlib import Path
 from typing import List
 
@@ -33,44 +35,32 @@ os.makedirs(OCR_PDF_DIR, exist_ok=True)
 os.makedirs(CSV_DIR, exist_ok=True)
 
 
-# === Hàm OCR PDF ===
+# === Hàm OCR PDF (bỏ OCRmyPDF, chỉ dùng PyMuPDF + pytesseract) ===
 def ensure_ocr_pdf(file_path: str) -> str:
     base_name = os.path.basename(file_path)
-    ocr_path = os.path.join(OCR_PDF_DIR, f"OCR_{base_name}")
 
     try:
+        # Thử load text trực tiếp bằng PyPDFLoader
         pdf_docs = PyPDFLoader(file_path).load()
+
+        # Nếu PDF rỗng (scan, không có text) → OCR bằng PyMuPDF + pytesseract
         if all(len(d.page_content.strip()) == 0 for d in pdf_docs):
-            print(f"[AUTO OCR] {file_path} → OCRmyPDF (force-ocr)")
-            try:
-                subprocess.run(
-                    [
-                        "ocrmypdf",
-                        "--force-ocr",
-                        "--invalidate-digital-signatures",
-                        "--language", "vie+eng",
-                        file_path,
-                        ocr_path
-                    ],
-                    check=True
-                )
-                return ocr_path
-            except Exception as e:
-                print(f"[OCRmyPDF lỗi] {file_path} → {e}")
-                print("[Fallback] Dùng PyMuPDF + pytesseract")
-                text_out = os.path.join(OCR_DIR, f"{Path(file_path).stem}.txt")
-                with fitz.open(file_path) as doc, open(text_out, "w", encoding="utf-8") as out:
-                    for page_num in range(len(doc)):
-                        pix = doc[page_num].get_pixmap(dpi=300)
-                        img = Image.open(io.BytesIO(pix.tobytes("png")))
-                        text = pytesseract.image_to_string(img, lang="vie+eng")
-                        out.write(f"\n--- Page {page_num+1} ---\n{text}\n")
-                return file_path
+            print(f"[Fallback OCR] {file_path} → Dùng PyMuPDF + pytesseract")
+
+            text_out = os.path.join(OCR_DIR, f"{Path(file_path).stem}.txt")
+            with fitz.open(file_path) as doc, open(text_out, "w", encoding="utf-8") as out:
+                for page_num in range(len(doc)):
+                    pix = doc[page_num].get_pixmap(dpi=300)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    text = pytesseract.image_to_string(img, lang="vie+eng")
+                    out.write(f"\n--- Page {page_num+1} ---\n{text}\n")
+            return file_path
+
     except Exception as e:
-        print(f"[AUTO OCR lỗi chung] {file_path} → {e}")
+        print(f"[OCR lỗi chung] {file_path} → {e}")
 
+    # Nếu đọc được text bình thường thì trả về file gốc
     return file_path
-
 
 # === Hàm chuyển bảng thành text dễ hiểu ===
 def table_to_text(df: pd.DataFrame, source: str, table_name: str = "") -> str:
@@ -159,15 +149,28 @@ def load_documents(dir_path: str) -> List[Document]:
             except Exception as e:
                 print(f"[Excel/CSV lỗi] {file} → {e}")
         elif ext in [".txt", ".md"]:
-            docs.extend(TextLoader(str(file), encoding="utf-8").load())
+            docs_txt = TextLoader(str(file), encoding="utf-8").load()
+            # check metadata JSON cùng tên
+            base = str(file).replace("_text.txt", "")
+            meta_file = base + "_meta.json"
+            if os.path.exists(meta_file):
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                for d in docs_txt:
+                    d.metadata.update(meta)
+            docs.extend(docs_txt)
     return docs
 
 
 # === Main ===
 if __name__ == "__main__":
-    if os.path.exists(VECTOR_DIR):
-        shutil.rmtree(VECTOR_DIR)
-        print(f"🗑️ Đã xoá vector cũ: {VECTOR_DIR}")
+    # Đặt tên thư mục con riêng cho raw_data
+    sub_vector_dir = os.path.join(VECTOR_DIR, "raw_clean_data")
+
+    # Nếu thư mục con này đã tồn tại → xóa
+    if os.path.exists(sub_vector_dir):
+        shutil.rmtree(sub_vector_dir)
+        print(f"🗑️ Đã xoá vector cũ: {sub_vector_dir}")
 
     sources = []
     for p in (DATA_DIR, INPUT_DIR):
@@ -175,15 +178,17 @@ if __name__ == "__main__":
 
     chunks = chunk_documents(sources)
 
+    os.makedirs(sub_vector_dir, exist_ok=True)
+
     vectordb = Chroma.from_documents(
         documents=chunks,
         embedding=make_embeddings(),
-        persist_directory=VECTOR_DIR
+        persist_directory=sub_vector_dir
     )
 
     print("\n=== TÓM TẮT ===")
     print(f"📄 Tổng document: {len(sources)}")
     print(f"🔖 Tổng chunks: {len(chunks)}")
     print(f"📊 Bảng (giữ nguyên): {len([d for d in chunks if d.metadata.get('type')=='table'])}")
-    print(f"📂 Vector lưu tại: {VECTOR_DIR}")
+    print(f"📂 Vector lưu tại: {sub_vector_dir}")
     print(f"📂 CSV bảng lưu tại: {CSV_DIR}")

@@ -6,7 +6,6 @@ secrets.toml
 # Local data & generated artifacts
 data/
 inputs/
-vector_store/
 outputs/
 charts/
 

@@ -8,14 +8,28 @@ from paddleocr import PPStructure, save_structure_res
 import pytesseract
 import glob
 import shutil
+import re
+import json
 
-# ==== Cấu hình ==== 
+# ==== Cấu hình ====
 INPUT_FILE = None
 INPUT_DIR = r"inputs/raw_scan"
-TEMP_DIR = "outputs/orc_raw_output"          # OCR thô (Excel + Text)
+TEMP_DIR = "outputs/orc_raw_output"  # OCR thô (Excel + Text)
+
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
+
+
+def detect_unit(text: str):
+    """Tìm đơn vị tính trong text"""
+    patterns = [r"Đơn vị.*?:\s*(.+)", r"Unit.*?:\s*(.+)"]
+    for p in patterns:
+        m = re.search(p, text, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    return None
+
 
 def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
     print(f"\n📂 Đang xử lý file: {pdf_path}")
@@ -30,12 +44,13 @@ def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
     # Giữ cấu trúc thư mục theo raw_scan
     rel_path = os.path.relpath(pdf_path, INPUT_DIR)
     rel_dir = os.path.dirname(rel_path)
-
     temp_subdir = os.path.join(TEMP_DIR, rel_dir)
     ensure_dir(temp_subdir)
-   
 
     base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+
+    # Biến nhớ đơn vị từ trang trước
+    current_unit = None
 
     for i in range(start_page - 1, end_page):
         page_num = i + 1
@@ -53,7 +68,6 @@ def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
         # === Move file Excel/Text từ folder con ra ngoài ===
         page_folder = os.path.join(temp_subdir, f"{base_name}_page{page_num}")
         excel_file_raw = os.path.join(temp_subdir, f"{base_name}_page{page_num}.xlsx")
-        df = None
 
         if os.path.isdir(page_folder):
             excel_files = glob.glob(os.path.join(page_folder, "*.xlsx"))
@@ -63,7 +77,6 @@ def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
                 try:
                     shutil.move(excel_files[0], excel_file_raw)
                     print(f"📑 Xuất Excel RAW: {excel_file_raw}")
-                    df = pd.read_excel(excel_file_raw)
                 except Exception as e:
                     print(f"⚠️ Lỗi move/read Excel: {e}")
 
@@ -72,19 +85,35 @@ def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
                 shutil.move(txt_files[0], raw_text_file)
                 print(f"📝 Xuất Text RAW từ PaddleOCR: {raw_text_file}")
 
-            # Chỉ xóa folder con sau khi move xong
+            # Xóa folder con sau khi move
             shutil.rmtree(page_folder)
 
-        # === Luôn OCR text bổ sung bằng Tesseract ===
+        # === OCR text bổ sung bằng Tesseract ===
         text_tess = pytesseract.image_to_string(img_cv, lang="eng+vie")
         text_file_raw = os.path.join(temp_subdir, f"{base_name}_page{page_num}_text.txt")
         with open(text_file_raw, "w", encoding="utf-8") as f:
             f.write(text_tess)
         print(f"📝 Xuất Text RAW từ Tesseract: {text_file_raw}")
 
+        # === Phát hiện đơn vị tính ===
+        unit_found = detect_unit(text_tess)
+        if unit_found:
+            current_unit = unit_found
+
+        # === Xuất metadata JSON ===
+        meta = {
+            "file": base_name,
+            "page": page_num,
+            "unit": current_unit,
+            "source_pdf": pdf_path
+        }
+        meta_file = os.path.join(temp_subdir, f"{base_name}_page{page_num}_meta.json")
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        print(f"📝 Xuất Metadata: {meta_file}")
+
 
 def run_ocr_pipeline(start_page=1, end_page=None, dpi=300):
-
     # Xóa thư mục RAW cũ trước khi chạy lại
     if os.path.exists(TEMP_DIR):
         shutil.rmtree(TEMP_DIR)
@@ -101,16 +130,5 @@ def run_ocr_pipeline(start_page=1, end_page=None, dpi=300):
             process_pdf(pdf, start_page, end_page, dpi)
 
 
-
-    if INPUT_FILE:
-        process_pdf(INPUT_FILE, start_page, end_page, dpi)
-    else:
-        pdf_files = glob.glob(os.path.join(INPUT_DIR, "**", "*.pdf"), recursive=True)
-        if not pdf_files:
-            print("⚠️ Không tìm thấy file PDF nào trong thư mục.")
-            return
-        for pdf in pdf_files:
-            process_pdf(pdf, start_page, end_page, dpi)
-
 if __name__ == "__main__":
-    run_ocr_pipeline(start_page=5, end_page=17, dpi=300)
+    run_ocr_pipeline(start_page=1, end_page=None, dpi=300)

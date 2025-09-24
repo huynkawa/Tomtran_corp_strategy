@@ -3,15 +3,14 @@
 
 import os
 import shutil
+import json
 from pathlib import Path
 from typing import List
 
 import pandas as pd
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import (
-    PyPDFLoader, DirectoryLoader, Docx2txtLoader, TextLoader
-)
+from langchain_community.document_loaders import TextLoader
 from langchain_chroma import Chroma
 from dotenv import load_dotenv
 from src.config import make_embeddings
@@ -44,7 +43,7 @@ def chunk_documents(docs: List[Document], chunk_size=900, chunk_overlap=120) -> 
             all_chunks.extend(splitter.split_documents([doc]))
     return all_chunks
 
-# === Load file clean từ OCR (Excel, CSV, TXT) ===
+# === Load file clean từ OCR (Excel, CSV, TXT + metadata) ===
 def load_clean_docs(dir_path: str) -> List[Document]:
     docs = []
     for file in Path(dir_path).rglob("*"):
@@ -65,14 +64,22 @@ def load_clean_docs(dir_path: str) -> List[Document]:
                     metadata={"source": str(file), "type": "table"}
                 ))
             elif ext == ".txt":
-                docs.extend(TextLoader(str(file), encoding="utf-8").load())
+                # load text
+                docs_txt = TextLoader(str(file), encoding="utf-8").load()
+                # check metadata JSON cùng tên
+                base = str(file).replace("_text.txt", "")
+                meta_file = base + "_meta.json"
+                if os.path.exists(meta_file):
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    for d in docs_txt:
+                        d.metadata.update(meta)
+                docs.extend(docs_txt)
         except Exception as e:
             print(f"❌ Lỗi đọc file {file}: {e}")
     return docs
 
 # === Main ===
-from pathlib import Path
-
 if __name__ == "__main__":
     if os.path.exists(VECTOR_DIR):
         shutil.rmtree(VECTOR_DIR)
@@ -83,10 +90,12 @@ if __name__ == "__main__":
         if subdir.is_dir():
             print(f"\n📥 Đang nạp dữ liệu từ: {subdir}")
 
-            docs = load_clean_docs(str(subdir))   # hoặc load_documents nếu file bạn có
+            docs = load_clean_docs(str(subdir))
             chunks = chunk_documents(docs)
 
-            sub_vector_dir = os.path.join(VECTOR_DIR, subdir.name)
+
+            # Tạo vector store riêng cho cleaned_scan
+            sub_vector_dir = os.path.join(VECTOR_DIR, "cleaned_scan_data", subdir.name)
             os.makedirs(sub_vector_dir, exist_ok=True)
 
             vectordb = Chroma.from_documents(
@@ -94,6 +103,7 @@ if __name__ == "__main__":
                 embedding=make_embeddings(),
                 persist_directory=sub_vector_dir
             )
+
 
             print("\n=== TÓM TẮT ===")
             print(f"📂 Thư mục: {subdir.name}")

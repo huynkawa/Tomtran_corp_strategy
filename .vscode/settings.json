@@ -1,0 +1,19 @@
+{
+    // Pylance + editor luôn check code bằng Python 3.11 (Strategy)
+    "python.defaultInterpreterPath": "D:\\Conda_Evn\\Strategy\\python.exe",
+
+    // Định nghĩa nhiều profile để mở terminal nhanh
+    "terminal.integrated.profiles": {
+        "CondaStrategy": {
+            "path": "C:\\Users\\huynkawa\\anaconda3\\Scripts\\activate",
+            "args": ["D:\\Conda_Evn\\Strategy"]
+        },
+        "CondaStrategyOCR": {
+            "path": "C:\\Users\\huynkawa\\anaconda3\\Scripts\\activate",
+            "args": ["D:\\Conda_Evn\\strategy_ocr"]
+        }
+    },
+
+    // Mặc định mở terminal mới sẽ activate Strategy (3.11)
+    "terminal.integrated.defaultProfile.windows": "CondaStrategy"
+}

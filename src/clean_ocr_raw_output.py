@@ -93,7 +93,9 @@ def process_all():
 
     excel_files = glob.glob(os.path.join(RAW_DIR, "**", "*.xlsx"), recursive=True)
     text_files = glob.glob(os.path.join(RAW_DIR, "**", "*.txt"), recursive=True)
+    json_files = glob.glob(os.path.join(RAW_DIR, "**", "*.json"), recursive=True)
 
+    # Clean Excel
     for f in excel_files:
         rel_path = os.path.relpath(f, RAW_DIR)
         out_path = os.path.join(CLEAN_DIR, rel_path)
@@ -106,6 +108,7 @@ def process_all():
         except Exception as e:
             print(f"⚠️ Lỗi xử lý {f}: {e}")
 
+    # Clean Text
     for f in text_files:
         rel_path = os.path.relpath(f, RAW_DIR)
         out_path = os.path.join(CLEAN_DIR, rel_path)
@@ -120,5 +123,15 @@ def process_all():
         except Exception as e:
             print(f"⚠️ Lỗi xử lý text {f}: {e}")
 
+    # Copy Metadata JSON (không cần clean)
+    for f in json_files:
+        rel_path = os.path.relpath(f, RAW_DIR)
+        out_path = os.path.join(CLEAN_DIR, rel_path)
+        ensure_dir(os.path.dirname(out_path))
+        shutil.copy(f, out_path)
+        print(f"📑 Copy Metadata JSON: {out_path}")
+
+
 if __name__ == "__main__":
     process_all()
+
