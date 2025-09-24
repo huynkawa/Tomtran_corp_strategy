@@ -1,6 +1,4 @@
-# 📁 src/build_index_raw_data.py
-
-import os, shutil, subprocess, io, json
+import os, shutil, io, json
 from pathlib import Path
 from typing import List
 
@@ -19,6 +17,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from src.config import make_embeddings
 from langchain_chroma import Chroma
+from tqdm import tqdm   # ✅ progress bar
 
 # === Load env ===
 load_dotenv()
@@ -35,15 +34,11 @@ os.makedirs(OCR_PDF_DIR, exist_ok=True)
 os.makedirs(CSV_DIR, exist_ok=True)
 
 
-# === Hàm OCR PDF (bỏ OCRmyPDF, chỉ dùng PyMuPDF + pytesseract) ===
+# === Hàm OCR PDF (PyMuPDF + pytesseract) ===
 def ensure_ocr_pdf(file_path: str) -> str:
-    base_name = os.path.basename(file_path)
-
     try:
-        # Thử load text trực tiếp bằng PyPDFLoader
         pdf_docs = PyPDFLoader(file_path).load()
 
-        # Nếu PDF rỗng (scan, không có text) → OCR bằng PyMuPDF + pytesseract
         if all(len(d.page_content.strip()) == 0 for d in pdf_docs):
             print(f"[Fallback OCR] {file_path} → Dùng PyMuPDF + pytesseract")
 
@@ -59,8 +54,8 @@ def ensure_ocr_pdf(file_path: str) -> str:
     except Exception as e:
         print(f"[OCR lỗi chung] {file_path} → {e}")
 
-    # Nếu đọc được text bình thường thì trả về file gốc
     return file_path
+
 
 # === Hàm chuyển bảng thành text dễ hiểu ===
 def table_to_text(df: pd.DataFrame, source: str, table_name: str = "") -> str:
@@ -88,7 +83,6 @@ def extract_tables(file_path: str) -> List[Document]:
                     page_content=table_text,
                     metadata={"source": file_path, "page": i+1, "type": "table"}
                 ))
-                # Lưu CSV raw
                 csv_out = os.path.join(CSV_DIR, f"{Path(file_path).stem}_table_{i+1}.csv")
                 df.to_csv(csv_out, index=False, encoding="utf-8-sig")
                 print(f"[CSV Export] {csv_out}")
@@ -104,7 +98,7 @@ def chunk_documents(docs: List[Document], chunk_size=900, chunk_overlap=120) -> 
     print("[ingest] Chunking...")
     for doc in docs:
         if doc.metadata.get("type") == "table":
-            all_chunks.append(doc)  # bảng giữ nguyên (đã chuyển thành text mô tả)
+            all_chunks.append(doc)
         else:
             chunks = splitter.split_documents([doc])
             all_chunks.extend(chunks)
@@ -150,7 +144,6 @@ def load_documents(dir_path: str) -> List[Document]:
                 print(f"[Excel/CSV lỗi] {file} → {e}")
         elif ext in [".txt", ".md"]:
             docs_txt = TextLoader(str(file), encoding="utf-8").load()
-            # check metadata JSON cùng tên
             base = str(file).replace("_text.txt", "")
             meta_file = base + "_meta.json"
             if os.path.exists(meta_file):
@@ -164,25 +157,47 @@ def load_documents(dir_path: str) -> List[Document]:
 
 # === Main ===
 if __name__ == "__main__":
-    # Đặt tên thư mục con riêng cho raw_data
     sub_vector_dir = os.path.join(VECTOR_DIR, "raw_clean_data")
 
-    # Nếu thư mục con này đã tồn tại → xóa
-    if os.path.exists(sub_vector_dir):
-        shutil.rmtree(sub_vector_dir)
-        print(f"🗑️ Đã xoá vector cũ: {sub_vector_dir}")
+    print("\n======================================")
+    print("⚙️  Lựa chọn chế độ build dữ liệu")
+    print("   - Gõ 'r' rồi Enter → Xoá dữ liệu cũ và build lại từ đầu")
+    print("   - Gõ 'c' rồi Enter → Giữ nguyên dữ liệu cũ (không build)")
+    print("   - Nhấn Enter (bỏ trống) → mặc định = Continue (c)")
+    print("======================================")
+
+    choice = input("👉 Bạn chọn [R/c]: ").strip().lower()
+
+    if choice == "" or choice == "c":
+        print("⏭️ Tiếp tục giữ dữ liệu cũ. Không build lại.")
+        exit(0)
+    elif choice == "r":
+        if os.path.exists(sub_vector_dir):
+            shutil.rmtree(sub_vector_dir)
+            print(f"🗑️ Đã xoá vector cũ: {sub_vector_dir}")
+        if os.path.exists(CSV_DIR):
+            shutil.rmtree(CSV_DIR)
+            os.makedirs(CSV_DIR, exist_ok=True)
+            print(f"🗑️ Đã xoá CSV cũ: {CSV_DIR}")
+    else:
+        print("❌ Lựa chọn không hợp lệ. Thoát.")
+        exit(1)
+
+    print(f"\n📥 Đang nạp dữ liệu từ {DATA_DIR} và {INPUT_DIR}")
 
     sources = []
     for p in (DATA_DIR, INPUT_DIR):
         sources += load_documents(p)
 
     chunks = chunk_documents(sources)
+    print(f"[ingest] Tổng số chunks: {len(chunks)}")
 
     os.makedirs(sub_vector_dir, exist_ok=True)
 
+    embeddings = make_embeddings()
     vectordb = Chroma.from_documents(
-        documents=chunks,
-        embedding=make_embeddings(),
+        documents=tqdm(chunks, desc="[embedding raw_data]", unit="chunk"),
+        embedding=embeddings,
         persist_directory=sub_vector_dir
     )
 

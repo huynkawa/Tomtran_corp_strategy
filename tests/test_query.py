@@ -13,7 +13,7 @@ db = Chroma(
 retriever = db.as_retriever()
 
 # Dùng GPT để trả lời
-llm = ChatOpenAI(model="gpt-4o-mini")
+llm = ChatOpenAI(model="gpt-4.1")
 
 # Ví dụ câu hỏi test
 query = "phải trả ngắn hạn khác của công ty là bao nhiêu?"

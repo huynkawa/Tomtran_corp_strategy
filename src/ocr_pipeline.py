@@ -1,4 +1,3 @@
-# 📁 src/ocr_pipeline.py
 import os
 import cv2
 import numpy as np
@@ -29,6 +28,22 @@ def detect_unit(text: str):
         if m:
             return m.group(1).strip()
     return None
+
+
+def excel_to_text(excel_path: str, source: str) -> str:
+    """Đọc Excel OCR và chuyển thành text có ngữ nghĩa"""
+    try:
+        df = pd.read_excel(excel_path, header=None)
+        lines = []
+        for row in df.itertuples(index=False):
+            row_text = " | ".join([str(c) for c in row if pd.notna(c)])
+            if row_text.strip():
+                lines.append(row_text)
+        table_text = "\n".join(lines)
+        return f"📊 Bảng OCR từ {source}:\n{table_text}"
+    except Exception as e:
+        print(f"⚠️ Không đọc được Excel {excel_path}: {e}")
+        return ""
 
 
 def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
@@ -77,6 +92,17 @@ def process_pdf(pdf_path, start_page=1, end_page=None, dpi=300):
                 try:
                     shutil.move(excel_files[0], excel_file_raw)
                     print(f"📑 Xuất Excel RAW: {excel_file_raw}")
+
+                    # 👉 Chuyển Excel OCR thành text bổ sung
+                    table_text = excel_to_text(excel_file_raw, f"{base_name}_page{page_num}")
+                    if table_text:
+                        text_file_from_excel = os.path.join(
+                            temp_subdir, f"{base_name}_page{page_num}_excel.txt"
+                        )
+                        with open(text_file_from_excel, "w", encoding="utf-8") as f:
+                            f.write(table_text)
+                        print(f"📝 Xuất Text từ Excel OCR: {text_file_from_excel}")
+
                 except Exception as e:
                     print(f"⚠️ Lỗi move/read Excel: {e}")
 

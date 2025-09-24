@@ -8,6 +8,7 @@ data/
 inputs/
 outputs/
 charts/
+vector_store/
 
 # Python
 __pycache__/
