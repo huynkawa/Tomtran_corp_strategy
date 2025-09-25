@@ -152,36 +152,41 @@ if user_msg:
         debug=debug_mode,
     )
 
-    # Decorate message theo nguồn
-    assistant_id = os.getenv("ASSISTANT_ID", "unknown")
+  # Decorate message theo nguồn
+assistant_id = os.getenv("ASSISTANT_ID", "unknown")
 
-    if result["source"] == "internal":
+decorated_msg = "🤖 Assistant API\n\n"
+if isinstance(result, dict):
+    source = result.get("source", "unknown")
+    answer = result.get("answer", "")
+
+    if source == "internal":
         decorated_msg = (
             "<div style='background-color:#e8f5e9; padding:10px; border-radius:10px;'>"
             "🏛️ <b>Trả lời dựa trên kiến thức nội bộ</b> — 🤖 Assistant API</div>\n\n"
-            + result["answer"]
+            + answer
         )
-    elif result["source"] == "general":
+    elif source == "general":
         decorated_msg = (
             "<div style='background-color:#f5f5f5; padding:10px; border-radius:10px;'>"
             "🌐 <b>Trả lời dựa trên kiến thức tổng quan</b> — 🤖 Assistant API</div>\n\n"
-            + result["answer"]
+            + answer
         )
     else:
-        decorated_msg = "🤖 Assistant API\n\n" + result["answer"]
+        decorated_msg += answer
+else:
+    decorated_msg += str(result) if result else "Không có kết quả trả về."
 
+st.session_state.history.append(("assistant", decorated_msg))
 
+if debug_mode and isinstance(result, dict):
+    with st.expander("📂 Context (debug)", expanded=False):
+        st.markdown(result.get("ctx_text") or "—")
 
-    st.session_state.history.append(("assistant", decorated_msg))
-
-    if debug_mode:
-        with st.expander("📂 Context (debug)", expanded=False):
-            st.markdown(result["ctx_text"] or "—")
-
-        if result["docs"]:
-            st.write("🔎 Lấy được", len(result["docs"]), "tài liệu liên quan")
-            for d in result["docs"]:
-                st.text(f"- {d.metadata.get('source', 'unknown')}")
+    if result.get("docs"):
+        st.write("🔎 Lấy được", len(result["docs"]), "tài liệu liên quan")
+        for d in result["docs"]:
+            st.text(f"- {d.metadata.get('source', 'unknown')}")
 
 # --- Render history ---
 for role, content in st.session_state.history:
