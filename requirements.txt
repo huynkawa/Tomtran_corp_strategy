@@ -32,3 +32,7 @@ tiktoken
 sentence-transformers
 transformers
 scikit-learn
+
+
+# chạy trên streamlit cloud
+gdown
