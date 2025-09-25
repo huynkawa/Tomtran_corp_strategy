@@ -43,7 +43,7 @@ def ensure_vectorstore_from_gdrive():
     VECTOR_DIR = os.getenv("VECTOR_STORE_DIR", "vector_store")
 
     # 🔑 Thay link share folder Google Drive ở đây
-    GOOGLE_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1nwMChviaL3EwP1H-p7sRX0uV0iPiV2dN?usp=sharing"
+    GOOGLE_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1yKkKkRuYNZtSQs7biqmuMY3NGuSO9UIO?usp=sharing"
 
     if not os.path.exists(VECTOR_DIR):
         st.warning("⚠️ vector_store chưa có, đang tải từ Google Drive (folder)...")
