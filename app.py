@@ -152,6 +152,10 @@ if user_msg:
         debug=debug_mode,
     )
 
+# Đảm bảo luôn có biến result
+result = locals().get("result", None)
+
+
   # Decorate message theo nguồn
 assistant_id = os.getenv("ASSISTANT_ID", "unknown")
 

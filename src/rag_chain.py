@@ -51,7 +51,7 @@ def wait_for_completion(client, thread_id, run_id, timeout=60):
 def rag_answer(query, retriever_or_db, client=None, use_fallback=True, threshold=0.2, k=12, debug=False):
     """
     Trả lời câu hỏi dựa trên tài liệu (RAG) bằng Assistant API.
-    Trả về dict:
+    Luôn trả về dict chuẩn:
       {
         "answer": str,
         "source": "internal" | "general" | "none",
@@ -87,7 +87,6 @@ def rag_answer(query, retriever_or_db, client=None, use_fallback=True, threshold
             for d, score in reranked:
                 print(f"   - Score={score:.4f} | Source={d.metadata.get('source', 'unknown')}")
 
-        # Soạn prompt cho Assistant
         prompt = f"""
 Dữ liệu nội bộ (context):
 {ctx_text}
@@ -99,25 +98,19 @@ Hãy trả lời dựa trên dữ liệu nội bộ nếu có.
 Nếu không có, hãy dùng kiến thức chung (và nêu rõ nguồn).
 """.strip()
 
-        # Tạo message trong thread
         client.beta.threads.messages.create(
             thread_id=rag_answer._thread.id,
             role="user",
             content=prompt
         )
 
-        # Tạo run
         run = client.beta.threads.runs.create(
             thread_id=rag_answer._thread.id,
             assistant_id=assistant_id
         )
         print(f"[AssistantAPI] 🚀 Run created: {run.id} | Assistant: {assistant_id}")
 
-        # Đợi Assistant trả lời
         answer_text = wait_for_completion(client, rag_answer._thread.id, run.id)
-
-        print(f"[AssistantAPI] ✅ Assistant trả lời xong | Run={run.id}")
-        print(f"[AssistantAPI] ✍️ Answer (preview): {answer_text[:200]}...")
 
         return {
             "answer": answer_text,
@@ -141,3 +134,18 @@ Nếu không có, hãy dùng kiến thức chung (và nêu rõ nguồn).
         print(f"[AssistantAPI] 🚀 Run created (fallback): {run.id} | Assistant: {assistant_id}")
 
         answer_text = wait_for_completion(client, rag_answer._thread.id, run.id)
+
+        return {
+            "answer": answer_text,
+            "source": "general",
+            "ctx_text": "",
+            "docs": [],
+        }
+
+    # --- Nếu không có context và không fallback ---
+    return {
+        "answer": "⚠️ Không tìm thấy dữ liệu phù hợp và không bật fallback.",
+        "source": "none",
+        "ctx_text": "",
+        "docs": [],
+    }
