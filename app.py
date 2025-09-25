@@ -41,19 +41,18 @@ with st.expander("🔧 System prompt đang dùng", expanded=False):
 # === Google Drive Downloader ===
 def ensure_vectorstore_from_gdrive():
     VECTOR_DIR = os.getenv("VECTOR_STORE_DIR", "vector_store")
-    ZIP_PATH = "vector_store.zip"
 
-    # 🔑 Thay ID này bằng ID file thật của bạn trên Google Drive
-    GOOGLE_DRIVE_FILE_ID = "YOUR_FILE_ID_HERE"
+    # 🔑 Thay link share folder Google Drive ở đây
+    GOOGLE_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1nwMChviaL3EwP1H-p7sRX0uV0iPiV2dN?usp=sharing"
 
     if not os.path.exists(VECTOR_DIR):
-        st.warning("⚠️ vector_store chưa có, đang tải từ Google Drive...")
-        url = f"https://drive.google.com/uc?id={GOOGLE_DRIVE_FILE_ID}"
-        gdown.download(url, ZIP_PATH, quiet=False)
+        st.warning("⚠️ vector_store chưa có, đang tải từ Google Drive (folder)...")
+        try:
+            gdown.download_folder(GOOGLE_DRIVE_FOLDER_URL, output=VECTOR_DIR, quiet=False, use_cookies=False)
+            st.success("✅ Đã tải folder vector_store từ Google Drive!")
+        except Exception as e:
+            st.error(f"❌ Lỗi khi tải vector_store: {e}")
 
-        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
-            zip_ref.extractall(".")
-        st.success("✅ Đã tải và giải nén vector_store!")
 
 # Gọi đảm bảo vector_store có sẵn trước khi load
 ensure_vectorstore_from_gdrive()
