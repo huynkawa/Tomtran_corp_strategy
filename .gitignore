@@ -2,6 +2,7 @@
 .env
 .streamlit/secrets.toml
 secrets.toml
+.env.active
 
 # Local data & generated artifacts
 data/
