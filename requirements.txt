@@ -36,3 +36,4 @@ scikit-learn
 
 # chạy trên streamlit cloud
 gdown
+python-docx
