@@ -156,7 +156,7 @@ if user_msg:
 result = locals().get("result", None)
 
 
-  # Decorate message theo nguồn
+# Decorate message theo nguồn
 assistant_id = os.getenv("ASSISTANT_ID", "unknown")
 
 decorated_msg = "🤖 Assistant API\n\n"
@@ -165,17 +165,17 @@ if isinstance(result, dict):
     answer = result.get("answer", "")
 
     if source == "internal":
-        decorated_msg = (
-            "<div style='background-color:#e8f5e9; padding:10px; border-radius:10px;'>"
-            "🏛️ <b>Trả lời dựa trên kiến thức nội bộ</b> — 🤖 Assistant API</div>\n\n"
-            + answer
-        )
+        # 👉 Nội bộ: chỉ hiển thị nội dung, không cần nhãn nguồn
+        decorated_msg = answer
+
     elif source == "general":
+        # 👉 Tổng quan: hiển thị nhãn nguồn rõ ràng
         decorated_msg = (
             "<div style='background-color:#f5f5f5; padding:10px; border-radius:10px;'>"
             "🌐 <b>Trả lời dựa trên kiến thức tổng quan</b> — 🤖 Assistant API</div>\n\n"
             + answer
         )
+
     else:
         decorated_msg += answer
 else:
@@ -191,6 +191,7 @@ if debug_mode and isinstance(result, dict):
         st.write("🔎 Lấy được", len(result["docs"]), "tài liệu liên quan")
         for d in result["docs"]:
             st.text(f"- {d.metadata.get('source', 'unknown')}")
+
 
 # --- Render history ---
 for role, content in st.session_state.history:

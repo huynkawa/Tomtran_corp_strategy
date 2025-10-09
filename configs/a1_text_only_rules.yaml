@@ -1,0 +1,14 @@
+# src/a1_text_only_rules.yaml
+files:
+  - match: "(?i)Appen6.*Retention"
+    company: "UIC"
+    doc_title: "APPENDIX 6 - RETENTION GUIDELINE"
+    doc_type: "Underwriting Guideline / Appendix"
+    appendix_id: "Appendix 6"
+  - match: "(?i)Appen21.*PE UW guideline"
+    company: "UIC"
+    doc_title: "APPENDIX 21 - UW GUIDELINE - PROPERTY & ENGINEERING"
+    doc_type: "Underwriting Guideline / Appendix"
+defaults:
+  department: "UWRI"
+  confidentiality: "Internal"

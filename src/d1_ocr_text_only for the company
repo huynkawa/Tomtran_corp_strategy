@@ -1,0 +1,301 @@
+# -*- coding: utf-8 -*-
+"""
+a1_ocr_text_only_pro.py — OCR đa định dạng + metadata mở rộng
+--------------------------------------------------------------
+Đọc các loại tài liệu (PDF, DOCX, EXCEL, CSV, IMAGE, TXT)
+và nhận diện các thông tin meta tự động:
+    - Đơn vị tính (unit, multiplier)
+    - Tên công ty
+    - Ngày kỳ / kỳ kế toán
+    - Tiêu đề báo cáo / loại statement
+    - Ngôn ngữ
+
+Đầu ra:
+    <base>_page{n}_text.txt
+    <base>_page{n}_meta.json
+
+Đường dẫn mặc định:
+    Input : D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a_text_only_inputs
+    Output: D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\a_text_only_outputs
+"""
+
+from __future__ import annotations
+import os, re, glob, json, argparse, hashlib, shutil
+from typing import Optional, Tuple, Dict, List
+from pathlib import Path
+
+import numpy as np
+import cv2
+from PIL import Image
+import pytesseract
+from pytesseract import Output as TessOutput
+from pdf2image import convert_from_path
+import pandas as pd
+
+try:
+    import docx
+except ImportError:
+    docx = None
+
+# ========= CẤU HÌNH MẶC ĐỊNH =========
+INPUT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a_text_only_inputs"
+OUTPUT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\a_text_only_outputs"
+OCR_LANG_DEFAULT = "vie+eng"
+OCR_CFG_DEFAULT = "--psm 6 preserve_interword_spaces=1"
+APPEND_MODE = False
+
+TESSERACT_CMD = os.environ.get("TESSERACT_CMD", None)
+if TESSERACT_CMD and os.path.isfile(TESSERACT_CMD):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+
+# ========= HÀM TIỆN ÍCH CHUNG =========
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+def clean_txt_chars(s: str) -> str:
+    if not s: return ""
+    s = re.sub(r"[|¦•∙·]+", " ", s)
+    s = re.sub(r"[^\S\r\n]{2,}", " ", s)
+    s = re.sub(r"[^\x20-\x7E\u00A0-\uFFFF]", " ", s)
+    return s.strip()
+
+def _sha1_text(s: str) -> str:
+    return hashlib.sha1((s or "").encode("utf-8")).hexdigest()
+
+def _strip_vn_accents(s: str) -> str:
+    rep = {"đ":"d","ơ":"o","ô":"o","ư":"u","ă":"a","â":"a","á":"a","à":"a","ả":"a","ã":"a","ạ":"a",
+           "é":"e","è":"e","ẻ":"e","ẽ":"e","ẹ":"e","í":"i","ì":"i","ỉ":"i","ĩ":"i","ị":"i",
+           "ó":"o","ò":"o","ỏ":"o","õ":"o","ọ":"o","ú":"u","ù":"u","ủ":"u","ũ":"u","ụ":"u",
+           "ý":"y","ỳ":"y","ỷ":"y","ỹ":"y","ỵ":"y"}
+    s = (s or "").lower()
+    for k,v in rep.items():
+        s = s.replace(k, v)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# ========= DETECT ĐƠN VỊ / CÔNG TY / KỲ / BÁO CÁO =========
+_UNIT_SCALES = {
+    "đồng": 1, "dong": 1, "vnd": 1, "vnđ": 1, "vn dong": 1,
+    "nghìn đồng": 1_000, "ngan dong": 1_000, "nghin dong": 1_000, "ngàn đồng": 1_000,
+    "triệu đồng": 1_000_000, "trieu dong": 1_000_000,
+    "tỷ đồng": 1_000_000_000, "ty dong": 1_000_000_000,
+}
+def detect_unit_details(text: str):
+    if not text: return None, None, None
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    head = lines[:30]
+    unit_raw = None
+    for ln in head:
+        if re.search(r"(Đơn vị|Don vi|Unit)", ln, re.IGNORECASE):
+            unit_raw = ln; break
+    if not unit_raw:
+        for ln in head:
+            if re.search(r"\b(VND|VNĐ|đồng|dong|triệu|trieu|tỷ|ty)\b", ln, re.IGNORECASE):
+                unit_raw = ln; break
+    if not unit_raw:
+        return None, None, None
+    norm = _strip_vn_accents(unit_raw)
+    for k,v in _UNIT_SCALES.items():
+        if k in norm:
+            return unit_raw, "VND", v
+    return unit_raw, None, None
+
+def detect_company(text: str) -> Optional[str]:
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in (text or "").splitlines()]
+    head = [ln for ln in lines[:25] if ln]
+    scored = []
+    for ln in head:
+        low = ln.lower()
+        score = 0
+        score += 2 if "công ty" in low or "cong ty" in low else 0
+        score += 2 if "bảo hiểm" in low or "bao hiem" in low else 0
+        score += 1 if "tổng" in low or "tong" in low else 0
+        if score:
+            scored.append((score, len(ln), ln))
+    if scored:
+        scored.sort(key=lambda x:(x[0],x[1]), reverse=True)
+        return scored[0][2]
+    return head[0] if head else None
+
+VN_DATE = [
+    r"ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})",
+    r"(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})"
+]
+def detect_period(text: str) -> Optional[str]:
+    for p in VN_DATE:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            d,mth,y = [int(x) for x in m.groups()]
+            return f"{y:04d}-{mth:02d}-{d:02d}"
+    return None
+
+def detect_statement(text: str):
+    t = _strip_vn_accents(text)
+    if "bang can doi ke toan" in t or "balance sheet" in t:
+        return "balance_sheet"
+    if "ket qua hoat dong kinh doanh" in t or "income statement" in t:
+        return "income_statement"
+    if "luu chuyen tien te" in t or "cash flow" in t:
+        return "cash_flow"
+    if "thay doi von" in t or "changes in equity" in t:
+        return "equity_changes"
+    return None
+
+def detect_language(text: str) -> str:
+    if not text: return "vi"
+    vi_marks = re.findall(r"[ăâêôơưđáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ]", text.lower())
+    if len(vi_marks)>=3: return "vi"
+    if re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)", text, re.I):
+        return "en"
+    return "vi"
+
+
+# ========= ĐỌC FILE VĂN BẢN / ẢNH / PDF =========
+def read_text_file(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+def read_docx_file(path: str) -> str:
+    if docx is None: raise ImportError("⚠️ Cần cài python-docx.")
+    d = docx.Document(path)
+    return "\n".join(p.text for p in d.paragraphs if p.text.strip())
+
+def read_excel_or_csv(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext == ".csv":
+        df = pd.read_csv(path)
+    else:
+        df = pd.read_excel(path, engine="openpyxl")
+    return df.to_string(index=False)
+
+def ocr_image_to_text(img_bgr: np.ndarray, ocr_lang: str, ocr_cfg: str) -> str:
+    try:
+        txt_raw = pytesseract.image_to_string(img_bgr, lang=ocr_lang, config=ocr_cfg)
+        return clean_txt_chars(txt_raw)
+    except Exception as e:
+        print(f"⚠️ OCR lỗi: {e}")
+        return ""
+
+def pdf_to_texts(pdf_path: str, dpi: int, ocr_lang: str, ocr_cfg: str):
+    texts = []
+    try:
+        pages = convert_from_path(pdf_path, dpi=dpi)
+        for i,p in enumerate(pages, start=1):
+            img = cv2.cvtColor(np.array(p), cv2.COLOR_RGB2BGR)
+            txt = ocr_image_to_text(img, ocr_lang, ocr_cfg)
+            texts.append((i, txt))
+    except Exception as e:
+        print(f"⚠️ Lỗi PDF {pdf_path}: {e}")
+    return texts
+
+
+# ========= GHI OUTPUT =========
+def save_output(text: str, meta: dict, out_txt: str, out_meta: str):
+    ensure_dir(os.path.dirname(out_txt))
+    with open(out_txt, "w", encoding="utf-8") as f: f.write(text)
+    with open(out_meta, "w", encoding="utf-8") as f: json.dump(meta, f, ensure_ascii=False, indent=2)
+    print(f"📝 Saved: {os.path.basename(out_txt)}, {os.path.basename(out_meta)}")
+
+
+# ========= XỬ LÝ FILE =========
+def process_file(file_path: str, input_root: str, output_root: str,
+                 ocr_lang: str, ocr_cfg: str, dpi: int = 400):
+
+    rel_path = os.path.relpath(file_path, input_root)
+    base = Path(file_path).stem
+    out_dir = os.path.join(output_root, os.path.dirname(rel_path))
+    ensure_dir(out_dir)
+    ext = Path(file_path).suffix.lower()
+    texts = []
+
+    if ext in [".jpg",".jpeg",".png",".tif",".tiff",".bmp"]:
+        img = cv2.cvtColor(np.array(Image.open(file_path).convert("RGB")), cv2.COLOR_RGB2BGR)
+        texts=[(1, ocr_image_to_text(img, ocr_lang, ocr_cfg))]
+
+    elif ext==".pdf":
+        texts = pdf_to_texts(file_path, dpi, ocr_lang, ocr_cfg)
+
+    elif ext in [".doc",".docx"]:
+        try:
+            t = read_docx_file(file_path); texts=[(1,t)]
+        except Exception as e: print(f"⚠️ DOCX lỗi: {e}")
+
+    elif ext in [".xls",".xlsx",".csv"]:
+        try:
+            t = read_excel_or_csv(file_path); texts=[(1,t)]
+        except Exception as e: print(f"⚠️ Excel lỗi: {e}")
+
+    elif ext==".txt":
+        texts=[(1, read_text_file(file_path))]
+
+    else:
+        print(f"⚠️ Bỏ qua (không hỗ trợ): {file_path}")
+        return
+
+    for pno,txt in texts:
+        unit_raw,unit,unit_mul = detect_unit_details(txt)
+        comp = detect_company(txt)
+        per  = detect_period(txt)
+        stmt = detect_statement(txt)
+        lang = detect_language(txt)
+
+        meta={
+            "file":base,
+            "page":pno,
+            "company":comp,
+            "unit_raw":unit_raw,
+            "unit":unit,
+            "unit_multiplier":unit_mul,
+            "period":per,
+            "statement":stmt,
+            "language":lang,
+            "source_path":os.path.abspath(file_path),
+            "ocr_lang":ocr_lang,
+            "ocr_cfg":ocr_cfg,
+            "text_sha1":_sha1_text(txt)
+        }
+
+        out_txt=os.path.join(out_dir,f"{base}_page{pno}_text.txt")
+        out_meta=os.path.join(out_dir,f"{base}_page{pno}_meta.json")
+        save_output(txt, meta, out_txt, out_meta)
+
+
+# ========= MAIN CLI =========
+def main():
+    p=argparse.ArgumentParser("A1 — OCR đa định dạng (Pro Extended)")
+    p.add_argument("--input",type=str,default=INPUT_DIR_DEFAULT)
+    p.add_argument("--out",type=str,default=OUTPUT_DIR_DEFAULT)
+    p.add_argument("--ocr-lang",type=str,default=OCR_LANG_DEFAULT)
+    p.add_argument("--ocr-cfg",type=str,default=OCR_CFG_DEFAULT)
+    p.add_argument("--dpi",type=int,default=400)
+    p.add_argument("--clean",choices=["y","a","n","ask"],default="ask")
+    args=p.parse_args()
+
+    if os.path.exists(args.out):
+        choice=args.clean
+        if choice=="ask":
+            choice=input(f"⚠️ Output '{args.out}' đã tồn tại. y=xoá, a=append, n=bỏ qua: ").strip().lower()
+        if choice=="y":
+            shutil.rmtree(args.out,ignore_errors=True);print(f"🗑️ Đã xoá {args.out}")
+        elif choice=="a":
+            global APPEND_MODE;APPEND_MODE=True;print(f"➕ Giữ {args.out}, chỉ ghi file mới.")
+        elif choice=="n":
+            print("⏭️ Bỏ qua.");return
+        else:
+            print("❌ Lựa chọn không hợp lệ.");return
+    ensure_dir(args.out)
+
+    files=glob.glob(os.path.join(args.input,"**","*.*"),recursive=True)
+    if not files:
+        print("⚠️ Không có file nào trong input.");return
+    print(f"📂 Input: {args.input}\n📦 Output: {args.out}\n🧮 Tổng số file: {len(files)}")
+
+    for f in files:
+        process_file(f,args.input,args.out,args.ocr_lang,args.ocr_cfg,args.dpi)
+
+    print("\n✅ Hoàn tất OCR Pro Extended. Kiểm tra *_text.txt và *_meta.json trong output.")
+
+
+if __name__=="__main__":
+    main()
