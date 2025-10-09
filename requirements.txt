@@ -37,3 +37,6 @@ python-docx
 
 # --- Utilities ---
 gdown
+
+
+PyPDF2
