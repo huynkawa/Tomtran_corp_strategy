@@ -12,7 +12,6 @@ langchain-huggingface
 
 # --- Vector DB fix (Chroma + SQLite) ---
 chromadb==1.0.21
-
 pysqlite3-binary
 
 # --- Data processing ---
@@ -33,7 +32,8 @@ sentence-transformers
 transformers
 scikit-learn
 
-
-# chạy trên streamlit cloud
-gdown
+# --- Document processing ---
 python-docx
+
+# --- Utilities ---
+gdown
