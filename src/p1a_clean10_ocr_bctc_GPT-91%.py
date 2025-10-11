@@ -47,6 +47,20 @@ try:
 except Exception:
     _HAS_PADDLE = False
 
+# cache singleton cho Paddle (tránh khởi tạo lại)
+_PADDLE_OCR = None
+_PPSTRUCT = None
+def get_paddle_ocr(lang="vi", use_gpu=False):
+    global _PADDLE_OCR
+    if _PADDLE_OCR is None:
+        _PADDLE_OCR = PaddleOCR(lang=lang, use_angle_cls=True, use_gpu=use_gpu, show_log=False)
+    return _PADDLE_OCR
+def get_ppstructure(lang="en", use_gpu=False):
+    global _PPSTRUCT
+    if _PPSTRUCT is None:
+        _PPSTRUCT = PPStructure(show_log=False, use_gpu=use_gpu, lang=lang, layout=False, table=True)
+    return _PPSTRUCT
+
 # --- GPT enhancer (optional) ---
 try:
     import src.env  # nạp OPENAI_API_KEY từ .env.active nếu có
@@ -267,7 +281,7 @@ def ocr_image_text_paddle(img: Image.Image, lang="vi", use_gpu=False):
     if not _HAS_PADDLE:
         raise RuntimeError("PaddleOCR chưa sẵn sàng (pip install paddleocr).")
     bgr = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
-    ocr = PaddleOCR(lang=lang, use_angle_cls=True, use_gpu=use_gpu, show_log=False)
+    ocr = get_paddle_ocr(lang=lang, use_gpu=use_gpu)
     result = ocr.ocr(bgr, cls=True)
     lines = []
     for page in result:
@@ -327,8 +341,6 @@ def detect_company(text: str) -> Optional[str]:
     return head[0] if (head and len(head[0]) <= 120) else None
 
 # ---------- RENDERERS ----------
-# NEW: cho phép DPI từ CLI
-
 def render_pdf_page_to_image(pdf_path: str, page_number: int, dpi: int = 380) -> Image.Image:
     doc = fitz.open(pdf_path)
     page = doc.load_page(page_number)
@@ -339,10 +351,7 @@ def render_pdf_page_to_image(pdf_path: str, page_number: int, dpi: int = 380) ->
     doc.close()
     return img
 
-
-
-
-def render_docx_page_to_image(docx_path: str, page_number: int, dpi: int = 360):  # UPDATED default 360
+def render_docx_page_to_image(docx_path: str, page_number: int, dpi: int = 360):
     if not HAS_DOCX:
         raise RuntimeError("python-docx chưa sẵn sàng")
     doc = Document(docx_path); text = "\n".join([p.text for p in doc.paragraphs]) or ""
@@ -359,7 +368,7 @@ def render_docx_page_to_image(docx_path: str, page_number: int, dpi: int = 360):
 def render_image_file(path: str) -> Image.Image:
     return Image.open(path).convert("RGB")
 
-def iter_pages(path: str, dpi: int):  # UPDATED: truyền dpi
+def iter_pages(path: str, dpi: int):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
         with pdfplumber.open(path) as pdf:
@@ -418,7 +427,6 @@ def _tsv_dict_to_df(tsv: Dict[str, List]) -> pd.DataFrame:
     df["cy"] = df["top"]  + df["height"]/2.0
     return df
 
-# PATCH 2 — Cluster theo Y-tol thích ứng
 def _cluster_rows(tsv_df: pd.DataFrame, y_tol: int):
     med_h = float(tsv_df["height"].median() or 0)
     y_tol_eff = max(int(y_tol), int(0.35 * med_h) if med_h > 0 else y_tol)
@@ -436,7 +444,6 @@ def _cluster_rows(tsv_df: pd.DataFrame, y_tol: int):
     if cur: rows.append(pd.DataFrame(cur))
     return rows
 
-# Neo hai cột số bằng tiêu đề
 _HEADER_HINTS_END   = re.compile(r"(s[ốo]\s*c[uú]ối\s*n[ăa]m|ending\s*balance|current\s*year)", re.I)
 _HEADER_HINTS_BEGIN = re.compile(r"(s[ốo]\s*đ[ầa]u\s*n[ăa]m|beginning\s*balance|prior\s*year)", re.I)
 
@@ -460,7 +467,6 @@ def _anchor_numeric_splits(tsv_df: pd.DataFrame) -> Tuple[Optional[float], Optio
     split2 = max(split1 + 120, (sx_end + sx_begin) / 2.0)
     return float(split1), float(split2)
 
-# NEW: lọc token rác 1–2 ký tự
 _SHORT_NOISE = re.compile(r"^(?:[A-ZĐ]{1,2}|[IVX]{1,3}\.?)$")
 def _clean_name_token(tok: str) -> str:
     s = (tok or "").strip()
@@ -468,7 +474,6 @@ def _clean_name_token(tok: str) -> str:
     if _SHORT_NOISE.match(s): return ""
     return s
 
-# NEW: histogram fallback lấy 2 số bên phải trang khi không có split
 _AMOUNT_GROUP = re.compile(r"\d{1,3}(?:\.\d{3})+")
 def _fallback_two_num_by_hist(row_df: pd.DataFrame, page_w: int) -> Tuple[str,str]:
     cand = row_df.copy()
@@ -492,13 +497,11 @@ def _infer_columns(row_df: pd.DataFrame, max_cols: int = 5):
     row_df["col_id"] = row_df["col_id"].map(remap)
     return row_df
 
-# kiểm tra hàng hợp lệ
 def _row_is_valid(code, name, end, begin):
     if CODE_3.match((code or "").strip()): return True
     if (end and begin): return True
     return len((name or "").strip()) >= 7
 
-# PATCH 2 — assemble TSV với neo cột số + fallback KMeans + histogram
 def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = OCR_LANG_DEFAULT):
     bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
     tsv = pytesseract.image_to_data(bgr, lang=lang, config=OCR_CFG_TSV, output_type=TessOutput.DICT)
@@ -519,7 +522,7 @@ def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = O
             left_tokens, mid_tokens, end_tokens, begin_tokens = [], [], [], []
             for _, t in row_df.sort_values("cx").iterrows():
                 cx = float(t["cx"]); s = _norm_word(str(t["text"]))
-                s = _clean_name_token(s)  # NEW: bỏ rác 1–2 ký tự
+                s = _clean_name_token(s)
                 if not s: continue
                 if cx < (split1 - 16):
                     left_tokens.append(s)
@@ -548,7 +551,6 @@ def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = O
             end_val   = _fix_vn_number(" ".join(end_tokens))
             begin_val = _fix_vn_number(" ".join(begin_tokens))
 
-            # nếu thiếu cả 2 số → thử histogram
             if not end_val and not begin_val:
                 e2, b2 = _fallback_two_num_by_hist(row_df, page_w=W)
                 end_val = _fix_vn_number(e2); begin_val = _fix_vn_number(b2)
@@ -563,7 +565,6 @@ def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = O
         # --- fallback KMeans ---
         row_df2 = _infer_columns(row_df, max_cols=5)
         if row_df2 is None:
-            # cuối cùng, vẫn thử histogram để cứu số
             code, name, note = "", " ".join(row_df.sort_values("cx")["text"].astype(str)), ""
             e2, b2 = _fallback_two_num_by_hist(row_df, page_w=W)
             end, begin = _fix_vn_number(e2), _fix_vn_number(b2)
@@ -625,6 +626,34 @@ def rows_to_pipe_min(rows: List[Dict[str, str]]) -> str:
 def rows_to_json_min(rows: List[Dict[str, str]]) -> str:
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
+# === ASCII renderer (top-level, dùng chung cho MIXED/TABLE) ===
+def rows_to_ascii(rows: List[Dict[str, str]]) -> str:
+    headers = ["Mã số","Chỉ tiêu","Thuyết minh","Số cuối năm","Số đầu năm"]
+    if not rows:
+        w = {"ma": len(headers[0]), "chi": len(headers[1]), "tm": len(headers[2]),
+             "end": len(headers[3]), "start": len(headers[4])}
+    else:
+        w = {
+            "ma":   max(max(len(r.get("ma",""))   for r in rows), len(headers[0])),
+            "chi":  max(max(len(r.get("chi",""))  for r in rows), len(headers[1])),
+            "tm":   max(max(len(r.get("tm",""))   for r in rows), len(headers[2])),
+            "end":  max(max(len(r.get("end",""))  for r in rows), len(headers[3])),
+            "start":max(max(len(r.get("start",""))for r in rows), len(headers[4])),
+        }
+    pad_l = lambda s, ww: (s or "").ljust(ww)
+    pad_r = lambda s, ww: (s or "").rjust(ww)
+    line = f"+-{'-'*w['ma']}-+-{'-'*w['chi']}-+-{'-'*w['tm']}-+-{'-'*w['end']}-+-{'-'*w['start']}-+"
+    out = [line,
+           "| "+pad_l(headers[0],w['ma'])+" | "+pad_l(headers[1],w['chi'])+" | "+pad_l(headers[2],w['tm'])+
+           " | "+pad_r(headers[3],w['end'])+" | "+pad_r(headers[4],w['start'])+" |",
+           line]
+    for r in rows:
+        out.append("| "+pad_l(r.get('ma',''),w['ma'])+" | "+pad_l(r.get('chi',''),w['chi'])+" | "+
+                   pad_l(r.get('tm',''),w['tm'])+" | "+pad_r(r.get('end',''),w['end'])+" | "+
+                   pad_r(r.get('start',''),w['start'])+" |")
+    out.append(line)
+    return "\n".join(out)
+
 # ==== TABLE ROI DETECTOR (morphology) ====
 def _find_table_rois(bgr: np.ndarray) -> List[Tuple[int,int,int,int]]:
     """Trả về list bbox (x1,y1,x2,y2) các khung bảng lớn trong trang."""
@@ -659,16 +688,13 @@ def _find_table_rois(bgr: np.ndarray) -> List[Tuple[int,int,int,int]]:
     return rois
 
 def _mask_out_rois(pil: Image.Image, rois: List[Tuple[int,int,int,int]]) -> Image.Image:
-    """Che trắng các bbox bảng để OCR TEXT phần còn lại."""
     bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
     for (x1,y1,x2,y2) in rois:
         cv2.rectangle(bgr, (x1,y1), (x2,y2), (255,255,255), thickness=-1)
     return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
-
-# >>> PATCH START: preproc & OCR helpers for Paddle-only-boxes
+# >>> PATCH: preprocess & OCR số cho Paddle
 def _preprocess_for_paddle(bgr: np.ndarray) -> np.ndarray:
-    """Pad mép + OTSU nhị phân để detector PP-Structure không cắt lẹm chữ số."""
     h, w = bgr.shape[:2]
     pad = 6
     bgr2 = cv2.copyMakeBorder(bgr, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(255,255,255))
@@ -676,28 +702,43 @@ def _preprocess_for_paddle(bgr: np.ndarray) -> np.ndarray:
     thr  = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY)[1]
     return cv2.cvtColor(thr, cv2.COLOR_GRAY2BGR)
 
+def normalize_vn_amount(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    neg = s.startswith("(") and s.endswith(")")
+    s = re.sub(r"[^\d\.,\s]", "", s)
+    s = s.replace(",", ".")
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"\.{2,}", ".", s).strip(".")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
+        out = s
+    else:
+        digits = re.sub(r"[^\d]", "", s)
+        if len(digits) < 4:
+            return ""
+        parts = []
+        while digits:
+            parts.append(digits[-3:])
+            digits = digits[:-3]
+        out = ".".join(reversed(parts))
+    return ("-" + out) if neg else out
+
 def _ocr_crop_number(bgr: np.ndarray, box_xyxy: Tuple[int,int,int,int], lang: str = OCR_LANG_DEFAULT) -> str:
-    """Crop 1 ô theo (x1,y1,x2,y2) và OCR số bằng Tesseract, whitelist ký tự số."""
     x1, y1, x2, y2 = [max(0,int(v)) for v in box_xyxy]
     crop = bgr[y1:y2, x1:x2]
     if crop.size == 0:
         return ""
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     thr  = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY)[1]
-    cfg  = "--psm 7 -c tessedit_char_whitelist=0123456789().,- "
+    cfg  = "--psm 7 -c tessedit_char_whitelist=0123456789().,- -c classify_bln_numeric_mode=1"
     try:
         s = pytesseract.image_to_string(thr, lang=lang, config=cfg) or ""
     except Exception:
         s = ""
     return normalize_vn_amount(s)
-# <<< PATCH END
-
 
 def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
-    """
-    Dùng PP-Structure để lấy KHUNG bảng; cố gắng OCR LẠI 2 cột số bằng Tesseract nếu có bbox ô.
-    Nếu không có bbox → fallback parse html như cũ.
-    """
     if not _HAS_PADDLE:
         return None
 
@@ -706,7 +747,7 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
     bgr = _preprocess_for_paddle(bgr_raw)
 
     layout_lang = lang if lang in ("en","ch") else "en"
-    table_engine = PPStructure(show_log=False, use_gpu=use_gpu, lang=layout_lang, layout=False, table=True)
+    table_engine = get_ppstructure(lang=layout_lang, use_gpu=use_gpu)
     result = table_engine(bgr)
 
     # gom các bảng
@@ -729,7 +770,7 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
     if not tables and not table_items:
         return None
 
-    # 2) Ghép df (html) — dùng làm 'text base'
+    # 2) Ghép df (html) — text base
     df = None
     for t in tables:
         if df is None:
@@ -740,10 +781,9 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
             except Exception:
                 pass
     if df is None:
-        # vẫn không có html (bbox only?), bỏ qua text-base, dùng boxes-only ở bước 3
         df = pd.DataFrame()
 
-    # 3) Map 5 cột: CODE|NAME|NOTE|END|BEGIN (giống logic cũ)
+    # 3) Map 5 cột
     def _is_numish_series(series, ncheck=50):
         vals = series.head(ncheck).astype(str).tolist()
         return any(re.search(r"[\d()\-\.,]", v or "") for v in vals)
@@ -763,77 +803,62 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
             df2 = df2[pick]
             df2.columns = ["CODE","NAME","NOTE","END","BEGIN"]
     else:
-        # không có html → tạo khung rỗng 5 cột để đổ từ bbox
         df2 = pd.DataFrame(columns=["CODE","NAME","NOTE","END","BEGIN"])
 
-    # 4) Nếu có bbox cell → ưu tiên OCR lại 2 cột số END/BEGIN bằng Tesseract
-    #    Tùy phiên bản PP-Structure, res có thể chứa: 'boxes' | 'cell_boxes' | 'cells'
-    #    Ta gom về danh sách ô: [(row_idx, col_idx, (x1,y1,x2,y2))]
+    # 4) Nếu có bbox cell → OCR lại 2 cột số
     cell_boxes_all = []
     for item in table_items:
         res = item.get("res", {}) or {}
-        # pp-structure 有时提供 'boxes' (cell-wise), 有时 'cell_boxes' 或 'cells'
         raw_boxes = (res.get("boxes") or res.get("cell_boxes") or res.get("cells") or [])
         for cell in raw_boxes:
-            # cố gắng rút thông tin (row, col, box)
-            # format phòng thủ: dict with 'row','col','bbox' | list [x1,y1,x2,y2] v.v.
             r = cell.get("row", None) if isinstance(cell, dict) else None
             c = cell.get("col", None) if isinstance(cell, dict) else None
             bbox = cell.get("bbox", None) if isinstance(cell, dict) else None
-
             if bbox is None and isinstance(cell, dict):
-                # các key thay thế thường gặp
                 bbox = cell.get("box") or cell.get("bbox_xyxy") or cell.get("bbox_xywh")
-                if bbox and len(bbox) == 4 and bbox == "xywh":
-                    # nếu là xywh cần chuyển về xyxy, ở đây bỏ qua vì không chắc format
-                    pass
-
             if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-                # coi như xyxy
                 x1,y1,x2,y2 = bbox
                 cell_boxes_all.append((r, c, (int(x1),int(y1),int(x2),int(y2))))
 
-    # Nếu có bbox: dựng một bản 'df_num' chỉ chứa số từ OCR cho 2 cột phải
     if cell_boxes_all:
-        # Ước lượng vị trí cột bằng X-mid → tìm 2 cột numeric nhất ở bên phải
-        xs = [ (bx[2][0] + bx[2][2]) / 2.0 for bx in cell_boxes_all ]
-        xs_sorted = sorted(xs)
-        # heuristic: hai cột phải có X lớn nhất → numeric columns (nếu không có header mapping)
-        # nhưng nếu df2 đã có 5 cột, ta giữ mapping và chỉ OCR để sửa số END/BEGIN
-        # Tạo bản sao
+        xs_all = np.array([ (bxy[0]+bxy[2]) / 2.0 for (_,_,bxy) in cell_boxes_all ], dtype=float)
+        if xs_all.size >= 6:
+            try:
+                right_mask = xs_all > np.percentile(xs_all, 60)
+                xs_right = xs_all[right_mask]
+                if xs_right.size >= 4:
+                    km = KMeans(n_clusters=2, n_init="auto", random_state=0).fit(xs_right.reshape(-1,1))
+                    centers = sorted(km.cluster_centers_.ravel().tolist())
+                    split_mid = float(sum(centers)/2.0)
+                else:
+                    split_mid = float(np.percentile(xs_all, 85))
+            except Exception:
+                split_mid = float(np.percentile(xs_all, 85))
+        else:
+            split_mid = float(np.percentile(xs_all, 85))
+
         df_fix = df2.copy()
-        # Nếu df rỗng → nhảy qua, sẽ render theo bbox-only sau
+        bgr_for_ocr = bgr  # dùng ảnh đã threshold/pad
+
         if not df_fix.empty:
-            # OCR lại tất cả ô thuộc 2 cột cuối (END/BEGIN) nếu có hàng tương ứng
-            # vì không có mapping row<->bbox chắc chắn, ta ocr toàn bộ bbox (numeric-looking) và
-            # dùng normalize để "ghi đè" nếu text hiện tại không phải amount.
-            # (bảo thủ: chỉ ghi đè khi ô hiện tại không hợp lệ)
             for (r,c,bxy) in cell_boxes_all:
                 if r is None or c is None:
                     continue
-                # giả định: 2 cột cuối cùng là END/BEGIN trong df_fix
-                # điều kiện: cột ở "bên phải" → ưu tiên xem là số
-                # ta không biết cột index tuyệt đối trong df2; nên OCR & nếu là số thì cố gắng
-                # điền vào END hoặc BEGIN theo X:
-                val = _ocr_crop_number(bgr, bxy, lang=OCR_LANG_DEFAULT)
-                if not val:
-                    continue
-                # chiến lược tối thiểu xâm lấn:
-                # - nếu hàng r hợp lệ trong df_fix, và END rỗng hoặc không phải amount → thay bằng val
-                try:
-                    if r < len(df_fix):
-                        cur_end   = str(df_fix.at[r, "END"]) if "END" in df_fix.columns else ""
-                        cur_begin = str(df_fix.at[r, "BEGIN"]) if "BEGIN" in df_fix.columns else ""
-                        if (not _is_amount(cur_end)) and _is_amount(val):
-                            df_fix.at[r, "END"] = val
-                        elif (not _is_amount(cur_begin)) and _is_amount(val):
-                            df_fix.at[r, "BEGIN"] = val
-                except Exception:
-                    pass
+                val = _ocr_crop_number(bgr_for_ocr, bxy, lang=OCR_LANG_DEFAULT)
+                if r < len(df_fix) and val:
+                    cx = (bxy[0] + bxy[2]) / 2.0
+                    if cx < split_mid:
+                        if "END" in df_fix.columns:
+                            cur_end = str(df_fix.at[r, "END"])
+                            if not re.fullmatch(r"\d{1,3}(?:\.\d{3})+|-?\d{4,}", cur_end or ""):
+                                df_fix.at[r, "END"] = val
+                    else:
+                        if "BEGIN" in df_fix.columns:
+                            cur_begin = str(df_fix.at[r, "BEGIN"])
+                            if not re.fullmatch(r"\d{1,3}(?:\.\d{3})+|-?\d{4,}", cur_begin or ""):
+                                df_fix.at[r, "BEGIN"] = val
             df2 = df_fix
         else:
-            # bbox-only → dựng pipe chỉ với mã/tên trống, số từ OCR (bảo thủ)
-            # gom theo hàng r (nếu có), mỗi hàng 5 cột
             max_r = max([r for (r,_,_) in cell_boxes_all if r is not None] + [-1])
             rows = []
             for rr in range(max_r+1):
@@ -841,39 +866,34 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
             for (r,c,bxy) in cell_boxes_all:
                 if r is None: 
                     continue
-                val = _ocr_crop_number(bgr, bxy, lang=OCR_LANG_DEFAULT)
-                if _is_amount(val):
-                    # đổ tạm vào END trước, nếu END đã có → BEGIN
-                    if not rows[r][3]:
-                        rows[r][3] = val
-                    elif not rows[r][4]:
-                        rows[r][4] = val
-            # thành df 5 cột
+                val = _ocr_crop_number(bgr_for_ocr, bxy, lang=OCR_LANG_DEFAULT)
+                if val:
+                    cx = (bxy[0] + bxy[2]) / 2.0
+                    if cx < split_mid:
+                        if not rows[r][3]:
+                            rows[r][3] = val
+                    else:
+                        if not rows[r][4]:
+                            rows[r][4] = val
             df2 = pd.DataFrame(rows, columns=["CODE","NAME","NOTE","END","BEGIN"])
 
-    # 5) Xuất pipe
     lines = []
     lines.append(" | ".join(df2.columns.tolist()))
     for _, r in df2.iterrows():
         vals = [str(x) if x is not None else "" for x in r.tolist()]
-        # Chốt: chuẩn hóa 2 cột số lần cuối
         if len(vals) >= 5:
             vals[3] = normalize_vn_amount(vals[3])
             vals[4] = normalize_vn_amount(vals[4])
         lines.append(" | ".join(vals))
     return "\n".join(lines)
 
-
 # ====== PATCH 1 — Lọc header/caption mạnh ======
-
 _DROP_NAME_CONTAINS_DEFAULT = [
     "mã số", "ma so", "thuyết minh", "thuyet minh",
     "31/12/20", "as at", "as of", "for the year ended",
     "vnd", "v n d", "đơn vị", "don vi", "ngày", "ngay",
     "bảng cân đối kế toán", "báo cáo tài chính", "mẫu số", "ban hành theo"
 ]
-
-
 _HEADER_STRONG_PATTERNS = [
     r"\b(b[ảa]ng)\s+c[âa]n\s+đ[oó]i\s+k[ếe]\s+to[áa]n\b",
     r"\bm[âa]u\s+s[ốo]\b",
@@ -883,7 +903,7 @@ _HEADER_STRONG_PATTERNS = [
     r"\b(a\.)\s*n[ợo]\s+ph[ảa]i\s+tr[ảa]\b",
     r"\b(b\.)\s*v[ốo]n\s+ch[ủu]\s*s[ởo]\s*h[ữu]\b",
     r"^\s*(\(?\d{3}\)?\s*=|\(?\d{3}\)?\s*[-=+])",
-    r"\b(i{1,4}|v|vi|iv)\.?\b",  # roman
+    r"\b(i{1,4}|v|vi|iv)\.?\b",
     r"\bwl\b"
 ]
 _DATE_LINE = re.compile(r"\b(0?[1-9]|[12]\d|3[01])\s*[\/\-.]\s*(0?[1-9]|1[0-2])\s*[\/\-.]\s*(20\d{2})\b")
@@ -912,19 +932,23 @@ def _prefilter_table_lines(pipe_text: str, yaml_table: dict) -> str:
         if _DATE_LINE.search(low) or _VND_LINE.search(low):
             continue
 
-        # chỉ drop nếu KHÔNG có số ở cột END/BEGIN
+        # chỉ drop nếu KHÔNG có số ở cột END/BEGIN và KHÔNG có mã hợp lệ
         has_amount = False
         try:
-            # parts: CODE | NAME | NOTE | END | BEGIN
             end_txt   = parts[-2].strip() if len(parts) >= 4 else ""
             begin_txt = parts[-1].strip() if len(parts) >= 5 else ""
             has_amount = _is_amount(end_txt) or _is_amount(begin_txt)
         except Exception:
             has_amount = False
 
-        if (not has_amount) and any(tok in low for tok in drop_tokens):
-            continue
+        code_ok = False
+        try:
+            code_ok = CODE_3.match((parts[0] or "").strip()) is not None
+        except Exception:
+            code_ok = False
 
+        if (not has_amount) and (not code_ok) and any(tok in low for tok in drop_tokens):
+            continue
 
         out.append(ln)
     return "\n".join(out)
@@ -962,20 +986,13 @@ def coerce_pipe_table(raw_text: str) -> str:
     return "\n".join(rows)
 
 # ====== Số & Scoring & Auto-route ======
-
 def _is_amount(x: str) -> bool:
-    """
-    Hợp lệ nếu:
-      - dạng nhóm chấm kiểu VN: 1.234.567 hoặc
-      - chỉ toàn chữ số, dài >=4 (ví dụ 1234, 15057403157)
-    """
     s = (x or "").strip()
     if not s:
         return False
     if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})*", s):
         return True
     return re.fullmatch(r"-?\d{4,}", s) is not None
-
 
 def parse_pipe_to_rows(pipe_text: str) -> List[Dict[str,str]]:
     rows = []
@@ -999,68 +1016,19 @@ def score_table_quality(rows: List[Dict[str,str]]) -> Dict[str,float]:
     score = row_coverage - 0.6*missing_amount_ratio - 0.3*dup_amount_ratio + 0.2*valid_code_ratio
     return {"row_coverage":row_coverage,"missing_amount_ratio":missing_amount_ratio,"dup_amount_ratio":dup_amount_ratio,"valid_code_ratio":valid_code_ratio,"score":score}
 
-
 def need_paddle_fallback(metrics: Dict[str,float]) -> bool:
-    """
-    Chỉ cho phép paddle khi TSV thật sự tệ để tránh 'bảng đẹp nhưng số sai'.
-    """
     vio = 0
     if metrics.get("row_coverage",0.0) < 0.72: vio += 1
     if metrics.get("missing_amount_ratio",1.0) > 0.55: vio += 1
     if metrics.get("valid_code_ratio",0.0) < 0.55: vio += 1
-    # nếu vừa thiếu số nhiều vừa mã kém → tăng trọng số
     if (metrics.get("missing_amount_ratio",1.0) > 0.60 and 
         metrics.get("valid_code_ratio",0.0) < 0.50):
         vio += 1
     return vio >= 2
 
-
-
-# ====== Chuẩn hoá số Việt + tách “2 số dính liền” ======
-_AMOUNT_GROUP = re.compile(r"\d{1,3}(?:\.\d{3})+")
-def normalize_vn_amount(s: str) -> str:
-    """
-    Chuẩn hoá số kiểu VN:
-      - nhận cả '15.057.403.157', '(15.057.403.157)', '15057403157', '15 057 403 157'
-      - trả về nhóm chấm chuẩn; nếu không nhận diện được thì "".
-    """
-    s = (s or "").strip()
-    if not s:
-        return ""
-    neg = s.startswith("(") and s.endswith(")")
-    # chỉ giữ số, dấu chấm, dấu phẩy, dấu cách
-    s = re.sub(r"[^\d\.,\s]", "", s)
-    # đồng nhất về dấu chấm, bỏ cách thừa, gộp dấu chấm lặp
-    s = s.replace(",", ".")
-    s = re.sub(r"\s+", "", s)
-    s = re.sub(r"\.{2,}", ".", s).strip(".")
-
-    # Nếu đã có nhóm chấm hợp lệ → giữ lại
-    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", s):
-        out = s
-    else:
-        # Nếu chỉ là dãy số mộc dài >=4 → tự group lại thành nghìn
-        digits = re.sub(r"[^\d]", "", s)
-        if len(digits) < 4:
-            return ""
-        # chèn dấu chấm từ phải sang trái
-        parts = []
-        while digits:
-            parts.append(digits[-3:])
-            digits = digits[:-3]
-        out = ".".join(reversed(parts))
-
-    return ("-" + out) if neg else out
-
-
 def split_glued_amounts(s: str) -> Tuple[str, str]:
-    """
-    Tách 2 số liền nhau trong 1 chuỗi.
-    Hỗ trợ cả dạng có chấm & dạng chỉ chữ số.
-    """
     if not s:
         return "", ""
-    # tìm tất cả cụm số có/không có dấu chấm
     hits = re.findall(r"\d{1,3}(?:\.\d{3})+|\d{4,}", s)
     if len(hits) >= 2:
         left = normalize_vn_amount(hits[-2])
@@ -1068,8 +1036,7 @@ def split_glued_amounts(s: str) -> Tuple[str, str]:
         return left, right
     return "", ""
 
-
-# ====== Validator gắt & Narrator chống NaN ======
+# ====== Validator gắt & Narrator ======
 def yaml_table_clean_rows(rows: List[Dict[str,str]], yaml_rules: Dict[str, Any]) -> List[Dict[str,str]]:
     name_map = (yaml_rules.get("name_alias") or {})
     drop_contains = (yaml_rules.get("drop_if_name_contains") or [])
@@ -1107,14 +1074,13 @@ def validate_and_autofix_rows(rows: List[Dict[str,str]]) -> Tuple[List[Dict[str,
     fused=[]
     for r in rows:
         if (fused and not r["ma"] and not r["tm"] and not r["end"] and not r["start"]
-            and r["chi"] and len(r["chi"]) <= 28):
+            and r["chi"] and len(r["chi"]) <= 48):
             fused[-1]["chi"] = (fused[-1]["chi"] + " " + r["chi"]).strip()
         else:
             fused.append(r)
     return fused, {"metrics":metrics, "issues":issues}
 
-
-# === CROSS-CHECK HELPERS (thêm ngay sau validate_and_autofix_rows) ===
+# === CROSS-CHECK HELPERS ===
 def _rows_to_amount_map(rows):
     import re
     def to_int(s):
@@ -1126,7 +1092,7 @@ def _rows_to_amount_map(rows):
         code = (r.get("ma") or "").strip()
         if not code:
             continue
-        key = code.split(".")[0]  # gom 210.1 -> 210
+        key = code.split(".")[0]
         e = to_int(r.get("end"))
         s = to_int(r.get("start"))
         if e is not None:   m_end[key]   = e
@@ -1134,7 +1100,6 @@ def _rows_to_amount_map(rows):
     return m_end, m_start
 
 def _eval_eq(expr, amap):
-    # expr ví dụ: "270 = 100 + 200"
     import re
     expr = (expr or "").strip()
     if "=" not in expr: 
@@ -1171,8 +1136,6 @@ def run_crosschecks(rows, yaml_rules):
     summary_ok = all((r["end"]["ok"] and r["start"]["ok"]) for r in results) if results else True
     return summary_ok, results
 
-
-
 def narrator_rows(rows):
     def _numstr(x):
         s = str(x or "").strip().lower()
@@ -1180,7 +1143,7 @@ def narrator_rows(rows):
     out=[]
     for r in rows:
         chi = (r.get("chi","") or "").strip()
-        if not chi or len(chi) < 2:  # bỏ dòng rỗng/đầu mục ngắn
+        if not chi or len(chi) < 2:
             continue
         ma = (r.get("ma","") or "").strip()
         tm = (r.get("tm","") or "").strip()
@@ -1194,9 +1157,6 @@ def narrator_rows(rows):
             parts.append(f"TM: {tm}")
         out.append("- " + " — ".join(parts))
     return "\n".join(out)
-
-
-
 
 # ====== TABLE build pipelines ======
 def build_table_tsv(pil: Image.Image, y_tol: int, ocr_lang: str) -> Tuple[str, Dict[str,float]]:
@@ -1230,9 +1190,10 @@ def process_page(
     extra_blocks: List[Tuple[str, str]] = []
     gpt_used = False
 
-    # OCR chọn engine
+    # OCR chọn engine: ưu tiên tesseract nếu ocr_engine="tesseract", ngược lại theo "auto"
     try:
-        if ocr_engine == "paddle" or (ocr_engine == "auto" and _HAS_PADDLE):
+        if ocr_engine == "paddle" or (ocr_engine == "auto" and _HAS_PADDLE and False):
+            # (tắt ưu tiên paddle ở auto: chỉ dùng khi gọi riêng)
             ocr_txt, meta_json = ocr_image_text_paddle(pil, lang=paddle_lang, use_gpu=paddle_gpu)
         else:
             ocr_txt, meta_json = ocr_image_text(pil, lang=ocr_lang)
@@ -1240,7 +1201,7 @@ def process_page(
         print(f"[WARN] OCR engine failed ({ocr_engine}): {e} → fallback Tesseract")
         ocr_txt, meta_json = ocr_image_text(pil, lang=ocr_lang)
     meta = json.loads(meta_json) if meta_json else {}
-    meta["_table_format"] = table_format  # nhớ định dạng xuất
+    meta["_table_format"] = table_format
 
     # ---- MIXED PAGE: phát hiện ROI bảng và tách TEXT / TABLE theo vùng ----
     extra_blocks_mixed: List[Tuple[str, str]] = []
@@ -1261,22 +1222,18 @@ def process_page(
 
         # 2) Với mỗi ROI: build TABLE (TSV/KMeans ưu tiên; Paddle chỉ fallback)
         def _render_rows(rows_struct: List[Dict[str, str]]) -> str:
-            # pipe: KHÔNG in header
             if table_format == "pipe":
                 return rows_to_pipe_min(rows_struct)
             if table_format == "json":
                 return json.dumps(rows_struct, ensure_ascii=False, indent=2)
-            # ascii
             return rows_to_ascii(rows_struct)
 
-        # đảm bảo mảng meta
         meta.setdefault("crosschecks_roi", [])
         meta.setdefault("roi_table_metrics", [])
         meta.setdefault("gpt_used_roi", [])
 
         for (x1, y1, x2, y2) in rois:
-            # nới ROI để giữ header "Số cuối năm / Số đầu năm"
-            pad_top = 40   # 30–60 tuỳ trang
+            pad_top = int((yaml_table.get("globals") or {}).get("roi_pad_top", 40))
             pad_lr  = 4
             y1_p = max(0, int(y1) - pad_top)
             x1_p = max(0, int(x1) - pad_lr)
@@ -1284,13 +1241,11 @@ def process_page(
             pil_roi = pil.crop((x1_p, y1_p, x2_p, int(y2)))
             meta.setdefault("roi_padded", []).append([x1_p, y1_p, x2_p, int(y2)])
 
-            # TSV trước
             pipe_best, met_best, route_best = "", {"score": -1e9}, "none"
             if table_engine in ("auto", "tsv"):
                 pipe_tsv, met_tsv = build_table_tsv(pil_roi, y_tol=y_tol, ocr_lang=ocr_lang)
                 pipe_best, met_best, route_best = pipe_tsv, met_tsv, "tsv"
 
-            # Paddle nếu cần
             need_pad = (table_engine == "paddle") or need_paddle_fallback(met_best)
             if _HAS_PADDLE and (table_engine in ("auto", "paddle")) and need_pad:
                 try:
@@ -1300,10 +1255,8 @@ def process_page(
                 except Exception as e:
                     meta["paddle_table_error"] = str(e)
 
-            # lọc header/caption
             pipe_best = _prefilter_table_lines(pipe_best, yaml_table)
 
-            # GPT chỉ cho TABLE ROI nếu scope cho phép
             gpt_used_roi = False
             if (gpt_scope in ("table_only", "all")) and use_gpt and _HAS_GPT_ENHANCER and pipe_best.strip():
                 try:
@@ -1320,7 +1273,6 @@ def process_page(
                     meta.setdefault("gpt_errors_roi", []).append(str(e))
             meta["gpt_used_roi"].append(bool(gpt_used_roi))
 
-            # Parse → clean → validate
             rows_struct = parse_pipe_to_rows(pipe_best)
             rows_struct = yaml_table_clean_rows(rows_struct, yaml_table.get("globals", {}))
             if do_autofix:
@@ -1328,7 +1280,6 @@ def process_page(
             else:
                 report = {"metrics": score_table_quality(rows_struct), "issues": []}
 
-            # ghi metrics ROI
             roi_metrics = score_table_quality(rows_struct)
             meta["roi_table_metrics"].append({
                 "roi": [x1_p, y1_p, x2_p, int(y2)],
@@ -1336,7 +1287,6 @@ def process_page(
                 "metrics": roi_metrics
             })
 
-            # CROSS-CHECK (an toàn)
             cross_ok, cross_detail = None, None
             try:
                 cross_ok, cross_detail = run_crosschecks(rows_struct, yaml_table)
@@ -1344,7 +1294,6 @@ def process_page(
             except Exception as e:
                 meta["crosschecks_roi"].append({"ok": None, "error": str(e)})
 
-            # Render TABLE + narrator + cross
             tbl_text = _render_rows(rows_struct)
             extra_blocks_mixed.append(("TABLE", tbl_text))
 
@@ -1370,7 +1319,6 @@ def process_page(
                 "roi_count": len(rois),
                 "engine": meta.get("engine"),
             })
-            # block chính là TEXT; các TABLE sẽ được append ở tầng ngoài
             return "TEXT", block_text_text, meta, extra_blocks_mixed
 
     # ---- Quyết định TABLE cho cả trang? ----
@@ -1382,12 +1330,10 @@ def process_page(
     if is_tbl:
         best_pipe, best_metrics, best_route = "", {"score": -1e9}, "none"
 
-        # TSV/KMeans
         if table_engine in ("auto", "tsv"):
             pipe_tsv, met_tsv = build_table_tsv(pil, y_tol=y_tol, ocr_lang=ocr_lang)
             best_pipe, best_metrics, best_route = pipe_tsv, met_tsv, "tsv"
 
-        # Paddle nếu cần
         need_pad = (table_engine == "paddle") or need_paddle_fallback(best_metrics)
         if _HAS_PADDLE and (table_engine in ("auto", "paddle")) and need_pad:
             try:
@@ -1397,7 +1343,6 @@ def process_page(
             except Exception as e:
                 meta["paddle_table_error"] = str(e)
 
-        # Coerce nếu vẫn rỗng
         if not best_pipe:
             cleaned = apply_yaml_clean(ocr_txt, yaml_table, mode="table")
             maybe_pipe = cleaned if ("|" in cleaned) else coerce_pipe_table(cleaned)
@@ -1405,10 +1350,8 @@ def process_page(
             best_metrics = score_table_quality(parse_pipe_to_rows(best_pipe))
             best_route = best_route if best_route != "none" else "coerce"
 
-        # Prefilter header/caption
         best_pipe = _prefilter_table_lines(best_pipe, yaml_table)
 
-        # GPT (chỉ cho TABLE)
         if (gpt_scope in ("table_only", "all")) and use_gpt and _HAS_GPT_ENHANCER and best_pipe.strip():
             try:
                 block2 = enhance_table_with_gpt(
@@ -1423,52 +1366,19 @@ def process_page(
             except Exception as e:
                 meta["gpt_error"] = str(e)
 
-        # YAML clean → struct rows
         rows = parse_pipe_to_rows(best_pipe)
         rows = yaml_table_clean_rows(rows, yaml_table.get("globals", {}))
-
-        # Validator & autofix
         if do_autofix:
             rows, report = validate_and_autofix_rows(rows)
         else:
             report = {"metrics": score_table_quality(rows), "issues": []}
 
-        # CROSS-CHECK sau khi rows đã sạch
         try:
             cross_ok, cross_detail = run_crosschecks(rows, yaml_table)
             meta["crosscheck"] = {"ok": cross_ok, "detail": cross_detail}
         except Exception as e:
             meta["crosscheck"] = {"ok": None, "error": str(e)}
 
-        # helper ASCII renderer (dùng khi table_format = "ascii")
-        def rows_to_ascii(rows: List[Dict[str, str]]) -> str:
-            headers = ["Mã số","Chỉ tiêu","Thuyết minh","Số cuối năm","Số đầu năm"]
-            if not rows:
-                w = {"ma": len(headers[0]), "chi": len(headers[1]), "tm": len(headers[2]),
-                     "end": len(headers[3]), "start": len(headers[4])}
-            else:
-                w = {
-                    "ma":   max(max(len(r.get("ma",""))   for r in rows), len(headers[0])),
-                    "chi":  max(max(len(r.get("chi",""))  for r in rows), len(headers[1])),
-                    "tm":   max(max(len(r.get("tm",""))   for r in rows), len(headers[2])),
-                    "end":  max(max(len(r.get("end",""))  for r in rows), len(headers[3])),
-                    "start":max(max(len(r.get("start",""))for r in rows), len(headers[4])),
-                }
-            pad_l = lambda s, ww: (s or "").ljust(ww)
-            pad_r = lambda s, ww: (s or "").rjust(ww)
-            line = f"+-{'-'*w['ma']}-+-{'-'*w['chi']}-+-{'-'*w['tm']}-+-{'-'*w['end']}-+-{'-'*w['start']}-+"
-            out = [line,
-                   "| "+pad_l(headers[0],w['ma'])+" | "+pad_l(headers[1],w['chi'])+" | "+pad_l(headers[2],w['tm'])+
-                   " | "+pad_r(headers[3],w['end'])+" | "+pad_r(headers[4],w['start'])+" |",
-                   line]
-            for r in rows:
-                out.append("| "+pad_l(r.get('ma',''),w['ma'])+" | "+pad_l(r.get('chi',''),w['chi'])+" | "+
-                           pad_l(r.get('tm',''),w['tm'])+" | "+pad_r(r.get('end',''),w['end'])+" | "+
-                           pad_r(r.get('start',''),w['start'])+" |")
-            out.append(line)
-            return "\n".join(out)
-
-        # Chọn định dạng xuất
         fmt = (table_format or "pipe").lower()
         if fmt == "ascii":
             block_text = rows_to_ascii(rows)
@@ -1477,7 +1387,6 @@ def process_page(
         else:
             block_text = rows_to_pipe_min(rows)
 
-        # narrator
         extra_blocks = []
         if narrator_on:
             try:
@@ -1486,7 +1395,6 @@ def process_page(
                 row_narr = f"[Narrative lỗi: {e}]"
             extra_blocks = [("TABLE→ROW-NARR", row_narr)]
 
-            # in cross tóm tắt nếu có
             if isinstance(meta.get("crosscheck", {}).get("detail"), list):
                 lines = ["[Cross-check] " + ("OK ✅" if meta["crosscheck"]["ok"] else "FAIL ❌")]
                 for r in meta["crosscheck"]["detail"]:
@@ -1507,7 +1415,7 @@ def process_page(
         })
         return "TABLE", block_text, meta, extra_blocks
 
-    # === TEXT nhánh === (không dùng GPT)
+    # === TEXT nhánh ===
     try:
         block = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
     except Exception:
@@ -1515,7 +1423,6 @@ def process_page(
     meta["gpt_used"] = False
     meta["text_sha1"] = _sha1(block)
     return "TEXT", block, meta, []
-
 
 # ====== MIRROR OUTPUT PATH ======
 def make_output_paths(input_root: str, output_root: str, file_path: str) -> Tuple[str,str]:
@@ -1531,14 +1438,14 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
                      yaml_table: dict, yaml_text: dict,
                      ocr_lang: str, split_debug: bool, start_page: Optional[int], end_page: Optional[int],
                      use_gpt: bool, gpt_table_mode: str, gpt_model: str, gpt_temp: float, log_gpt: bool,
-                     gpt_scope: str = "table_only",          # NEW
-                     no_autofix: bool = False,               # NEW (default False)
+                     gpt_scope: str = "table_only",
+                     no_autofix: bool = False,
                      force_table: bool = False,
                      rebuild_table: str = "auto", y_tol: int = 8,
                      ocr_engine: str = "auto", table_engine: str = "auto",
                      paddle_lang: str = "vi", paddle_gpu: bool = False,
                      narrator_on: bool = True, dpi: int = 360,
-                     table_format: str = "pipe"              # NEW: truyền xuống process_page
+                     table_format: str = "pipe"
                      ) -> None:
 
     print(f"📄 Input: {file_path}")
@@ -1550,7 +1457,7 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
     page_metas: List[dict] = []
 
     total_pages = 0
-    for page_idx, pil in iter_pages(file_path, dpi=dpi):  # render theo DPI
+    for page_idx, pil in iter_pages(file_path, dpi=dpi):
         if start_page is not None and page_idx + 1 < start_page:
             continue
         if end_page is not None and page_idx + 1 > end_page:
@@ -1561,13 +1468,13 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
             pil, yaml_table, yaml_text, ocr_lang,
             use_gpt=use_gpt and _HAS_GPT_ENHANCER,
             gpt_table_mode=gpt_table_mode, gpt_model=gpt_model, gpt_temp=gpt_temp, log_gpt=log_gpt,
-            gpt_scope=gpt_scope,                       # <-- dùng biến local (đã có trong chữ ký)
+            gpt_scope=gpt_scope,
             do_autofix=(not no_autofix), force_table=force_table,
             rebuild_table=rebuild_table, y_tol=y_tol,
             ocr_engine=ocr_engine, table_engine=table_engine,
             paddle_lang=paddle_lang, paddle_gpu=paddle_gpu,
-            narrator_on=narrator_on,                   # giữ narrator
-            table_format=table_format                  # <-- QUAN TRỌNG: truyền table_format
+            narrator_on=narrator_on,
+            table_format=table_format
         )
 
         header = f"### [PAGE {page_idx+1:02d}] [{btype}]"
@@ -1622,7 +1529,6 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
                 f.write("\n".join(blocks_table_only).strip())
         print("🔎 Split-debug files written.")
 
-
 # ====== CLI ======
 def build_argparser():
     p = argparse.ArgumentParser("P1A (GPT) — Scan gốc → TXT (TEXT/TABLE) + META (per-file) [Hybrid Auto-Route]")
@@ -1654,14 +1560,13 @@ def build_argparser():
     # Narrator & DPI
     p.add_argument("--narrator", choices=["y","n"], default="y")
     p.add_argument("--dpi", type=int, default=360, help="DPI render PDF/DOCX (khuyên 360–420)")
-    # NEW: định dạng xuất bảng
+    # Định dạng xuất bảng
     p.add_argument("--table-format", choices=["ascii","pipe","json"], default="pipe",
                    help="Định dạng xuất bảng: ascii (khung), pipe (CODE|NAME|NOTE|END|BEGIN), json (list rows)")
+    # Phạm vi GPT
     p.add_argument("--gpt-scope", choices=["table_only","all","none"], default="table_only",
-               help="Phạm vi dùng GPT: table_only (chỉ bảng), all (cả text & bảng), none (tắt GPT)")
-
+                   help="Phạm vi dùng GPT: table_only (chỉ bảng), all (cả text & bảng), none (tắt GPT)")
     return p
-
 
 def main():
     args = build_argparser().parse_args()
@@ -1705,14 +1610,15 @@ def main():
                 gpt_model=args.gpt_model,
                 gpt_temp=args.gpt_temp,
                 log_gpt=args.log_gpt,
-                gpt_scope=args.gpt_scope,           
+                gpt_scope=args.gpt_scope,
                 no_autofix=args.no_autofix,
                 force_table=getattr(args, "force_table", False),
                 rebuild_table=args.rebuild_table, y_tol=args.y_tol,
                 ocr_engine=args.ocr_engine, table_engine=args.table_engine,
                 paddle_lang=args.paddle_lang, paddle_gpu=args.paddle_gpu,
                 narrator_on=(args.narrator=="y"),
-                dpi=args.dpi,  # NEW
+                dpi=args.dpi,
+                table_format=args.table_format,
             )
         except Exception as e:
             import traceback

@@ -1,0 +1,14 @@
+{
+  "chat_name": "Đoạn Chat 1",
+  "updated_at": "2025-10-11T14:24:35.422015",
+  "messages": [
+    [
+      "user",
+      "CHÀO BẠN, BẠN CÓ THỂ TRẢ LỜI TỐT VẤN ĐỀ GÌ THẾ"
+    ],
+    [
+      "bot",
+      "Chào bạn! Tôi có thể hỗ trợ phân tích dữ liệu tài chính, khoản phải thu, đầu tư, dự phòng nghiệp vụ hoặc các chỉ số liên quan ngành bảo hiểm phi nhân thọ từ dữ liệu nội bộ bạn cung cấp [2][3] SOURCE. Nếu có yêu cầu cụ thể, bạn có thể nêu ra để tôi trả lời chi tiết hơn!\n\n<small><i>Nguồn: [1] inputs\\cleaned_scan_input\\compertitor data\\MSIG-BCTC-2024_page8_text_clean.txt; [2] inputs\\cleaned_scan_input\\uic_data\\2024-UIC_Financial-Statements-V_signed_page8_text_clean.txt; [3] inputs\\cleaned_scan_input\\uic_data\\2024-UIC_Financial-Statements-V_signed_page8_excel_clean.csv</i></small>"
+    ]
+  ]
+}

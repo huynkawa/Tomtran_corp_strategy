@@ -1,0 +1,59 @@
+# ========= LOGO & TIÊU ĐỀ =========
+
+LOGO_IS_VIDEO: true                # vẫn là video
+LOGO_BORDER_RADIUS_PX: 0           # 0 = không bo tròn (hết hình tròn)
+LOGO_OBJECT_FIT: "contain"         # tránh bị cắt; "cover" = cắt cho đủ khung
+LOGO_SHADOW: false                 # tắt đổ bóng viền xanh
+
+
+TITLE_FONT_SIZE_REM: 2.2                       # tăng: chữ tiêu đề to hơn
+LOGO_SIZE_PX: 70                               # tăng: logo to hơn (dễ bị “sát mép” nếu quá lớn)
+LOGO_OFFSET_REM: 0                             # tăng dương: header/ logo hạ xuống; âm: kéo lên
+
+# ========= BANNER DƯỚI HEADER (thay cho đường kẻ) =========
+HEADER_DIVIDER_MODE: "text"                    # "text"=hiện banner chữ + 2 vạch; "line"=chỉ kẻ
+HEADER_DIVIDER_TEXT: "Hãy hỏi tôi về chiến lược hay bất cứ điều gì"
+
+# nội dung banner; để trống = không hiện chữ (chỉ còn 2 vạch)
+HEADER_DIVIDER_TOP_REM: 0.8                    # tăng: banner hạ thấp xuống xa logo hơn
+HEADER_DIVIDER_BOTTOM_REM: 0.35                # tăng: nới khoảng trống bên dưới banner
+HEADER_DIVIDER_WIDTH_PCT: 82                   # tăng: banner (cả cụm) rộng hơn; giảm: hẹp lại
+HEADER_DIVIDER_THICK_PX: 1                     # tăng: vạch hai bên dày hơn
+HEADER_DIVIDER_STYLE: solid                    # solid | dashed | dotted → kiểu vạch
+HEADER_DIVIDER_COLOR: "#3a3f4b"                # đổi màu vạch hai bên
+## Chữ ở giữa
+HEADER_DIVIDER_TEXT_COLOR: "#bfbfbf"           # tăng sáng hơn (gần #fff) = chữ sáng hơn
+HEADER_DIVIDER_TEXT_SIZE_REM: 0.95             # tăng: chữ banner lớn hơn
+HEADER_DIVIDER_TEXT_WEIGHT: 600                # tăng: chữ đậm hơn (400=normal, 700=bold)
+
+
+
+
+
+# ========= KÍCH THƯỚC & BỐ CỤC =========
+HEADER_TO_CHAT_GAP_REM: -2.0                   # tăng âm: kéo khối chat lên gần banner; tăng dương: đẩy xuống
+CHAT_HEIGHT_VH_EMPTY: 15                       # tăng: khung chat (khi trống) cao hơn
+CHAT_HEIGHT_VH_NONEMPTY: 15                    # tăng: khung chat (khi có tin) cao hơn
+CHAT_PAD_V_REM: 1.1                            # tăng: đệm trên/dưới bên trong khung chat dày hơn
+CHAT_PAD_H_REM: 1.6                            # tăng: đệm trái/phải bên trong khung chat dày hơn
+
+CHAT_WIDTH_DESKTOP_PX: 820                     # tăng: khung chat rộng hơn trên desktop
+CHAT_WIDTH_TABLET_PX: 680                      # tăng: rộng hơn trên tablet
+CHAT_WIDTH_MOBILE_PCT: 92                      # tăng: rộng hơn trên mobile (% theo màn hình)
+
+INPUT_MARGIN_TOP_REM: -1.5                     # tăng âm: ô nhập kéo lên gần khung chat; tăng dương: đẩy xuống
+LEFT_SIDEBAR_WIDTH_PX: 290                     # tăng: sidebar trái rộng hơn
+
+# ========= STRAP (dòng giữa) =========
+SHOW_STRAP: true                                # false=ẩn strap
+STRAP_ICON: "🧭"                                 # chỉ đổi biểu tượng
+STRAP_TEXT: "The Best Strategy Assistant of Tom Tran"  # tăng độ dài: có thể xuống dòng nếu quá dài
+FOOTER_STRAP_TOP_MARG_REM: 0.10   # khoảng cách strap với phần trên (↑ tăng = xa hơn)
+# ========= FOOTER =========
+SHOW_FOOTER: false                               # false=ẩn footer
+FOOTER_TITLE: "© TOMTRAN Chatbot"               # nội dung hàng 1
+FOOTER_TAGLINE: "Strategic insight & business intelligence."  # nội dung hàng 2
+FOOTER_COPYRIGHT: "© 2025 Tom Tran Corporation. All rights reserved."  # nội dung hàng 3
+FOOTER_BRAND_TOP_MARG_REM: 0.35                 # tăng: footer cách strap xa hơn
+
+

@@ -1,0 +1,14 @@
+{
+  "chat_name": "Chat_2025-10-11_12h06m25s",
+  "updated_at": "2025-10-11T12:06:32.093328",
+  "messages": [
+    [
+      "user",
+      "hj"
+    ],
+    [
+      "bot",
+      "⚠️ Lỗi khi xử lý truy vấn: rag_answer() got an unexpected keyword argument 'use_assistant_api'"
+    ]
+  ]
+}

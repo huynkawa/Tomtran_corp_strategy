@@ -1,0 +1,318 @@
+version: 0.3
+
+globals:
+  currency: VND
+  unit_multiplier: 1
+
+  # Schema cột chuẩn (pipe)
+  column_names:
+    code:  code
+    name:  name
+    note:  note
+    end:   end
+    begin: begin
+
+  # Nhận diện trang là "bảng BCTC"
+  detection_tokens:
+    must_have_any:
+      - "Mã số"
+      - "Chỉ tiêu"
+      - "Số cuối năm"
+      - "Số đầu năm"
+      - "Tài sản"
+      - "Nguồn vốn"
+      - "Vốn chủ sở hữu"
+      - "Kết quả hoạt động kinh doanh"
+    nice_to_have:
+      - "B01-DN"
+      - "B01-DNPN"
+      - "B02-DN"
+      - "BCTC"
+      - "Thuyết minh"
+
+  # Ranh giới cột theo % bề rộng (2 biến thể)
+  column_x_percent:
+    five_cols:         # CODE | NAME | NOTE | END | BEGIN
+      code:  [0.00, 0.09]
+      name:  [0.09, 0.72]
+      note:  [0.72, 0.80]
+      end:   [0.80, 0.91]
+      begin: [0.91, 1.00]
+    four_cols:         # CODE | NAME | END | BEGIN
+      code:  [0.00, 0.09]
+      name:  [0.09, 0.78]
+      end:   [0.78, 0.89]
+      begin: [0.89, 1.00]
+
+  # Chuẩn hoá La Mã / tiêu đề cấp
+  roman_normalize:
+    "VỊ": "VI"
+    "lll": "III"
+    "ll": "II"
+    "I.": "I."
+    "II.": "II."
+    "III.": "III."
+    "IV.": "IV."
+    "V.": "V."
+    "VI.": "VI."
+    "VII.": "VII."
+
+  # Alias mã số hay méo OCR
+  code_aliases:
+    "154":   "151"
+    "161.2": "151.2"
+    "161.1": "151.1"
+    "3291":  "329.1"
+    "3292":  "329.2"
+    "3293":  "329.3"
+    "1311":  "131.1"
+    "1511":  "151.1"
+    "1512":  "151.2"
+    "1411":  "141"
+    # biến thể có dấu gạch
+    "329-1": "329.1"
+    "329-2": "329.2"
+    "329-3": "329.3"
+
+  # Chuẩn hoá TÊN danh mục (để tra cứu khi mã méo/thiếu)
+  name_aliases:
+    "Tong tai san": "Tổng tài sản"
+    "Nguon von": "Tổng nguồn vốn"
+    "No phai tra": "Nợ phải trả"
+    "Von CSH": "Vốn chủ sở hữu"
+    "Tai san ngan han": "Tài sản ngắn hạn"
+    "Tai san dai han": "Tài sản dài hạn"
+
+  # Ràng buộc mã ↔ tên chuẩn (giúp lookup chéo)
+  code_name_pairs:
+    "100": "Tài sản ngắn hạn"
+    "200": "Tài sản dài hạn"
+    "270": "Tổng tài sản"
+    "300": "Nợ phải trả"
+    "400": "Vốn chủ sở hữu"
+    "440": "Tổng nguồn vốn"
+
+  # Sơ đồ cha–con theo TÊN (song song rule theo mã)
+  parent_children_by_name:
+    "Tổng tài sản": ["Tài sản ngắn hạn", "Tài sản dài hạn"]
+    "Tổng nguồn vốn": ["Nợ phải trả", "Vốn chủ sở hữu"]
+
+  # Chuẩn hoá số (gom nghìn, sửa lỗi OCR phổ biến)
+  number_cleanup:
+    drop_chars: [" ", "\u00A0", "\t", "£", "¥", "₫"]
+    fix_patterns:
+      - from: "([0-9]),([0-9]{3})(?![0-9])"
+        to:   "\\1.\\2"               # 1,234 → 1.234
+      - from: "(\\d)\\.(\\d{1,2})\\.(\\d{3})(\\.|$)"
+        to:   "\\1\\2.\\3\\4"         # 150.9417,655,.545 → 1509417.655.545
+      - from: "(?<=\\d)\\s+(?=\\d)"
+        to:   ""                      # xoá khoảng trắng giữa số
+      - from: "[\\.,]{2,}"
+        to:   "."                     # chuẩn hoá dấu lặp
+      - from: "(?<=[^\\d])[ZIlO](?=\\d)"
+        to:   ""                      # ký tự lẫn vào số
+      - from: "(?<=\\d),(?=\\d{3}(\\D|$))"
+        to:   "."                     # 1,234 → 1.234
+      - from: "\\((\\d[\\d\\.,]*)\\)"
+        to:   "-\\1"                  # (1.234) → -1.234
+    thousand_grouping: true
+
+  # Chính sách tự sửa (bật để "trả về số đúng")
+  autofix_policy:
+    fix_parent_from_children: true      # SỬA CHA = tổng CON khi lệch
+    fix_minor_digit_off_by: true
+    fix_leading_extra_digit: true
+    clamp_negative_where_forbidden: true
+
+  # Cho phép override theo công ty (tuỳ chọn)
+  company_overrides: {}
+
+  # bổ sung (giảm rác header/caption)
+  drop_if_name_contains:
+    - "Bảng cân đối kế toán"
+    - "Mẫu số"
+    - "Ban hành theo"
+    - "Đơn vị tính"
+    - "As at"
+    - "As of"
+    - "For the year ended"
+
+  number_cleanup:
+    thousand_grouping: true
+
+
+
+# --- Phần rule dưới đây dùng cho validator ---
+rule_types:
+  eq: {tolerance: 0}
+  approx_eq: {tolerance_ratio: 0.002}
+  equals: {tolerance: 0}
+  non_negative: {}
+  may_negative: {}
+  increasing_order: {}
+  same_value: {}
+  required_codes: {}
+  unit_is: {}
+  note_is: {}
+  monotonic_group: {}
+
+# công thức cross vào YAML OPEN AI
+  cross_formulas:
+    - name: "Tài sản dài hạn"
+      end:   "200 = 210 + 220 + 250 + 260"
+      start: "200 = 210 + 220 + 250 + 260"
+    - name: "Tổng tài sản"
+      end:   "270 = 100 + 200"
+      start: "270 = 100 + 200"
+
+
+# =========================================================
+# BẢNG CÂN ĐỐI KẾ TOÁN (B01-DN/B01-DNPN)
+# =========================================================
+balance_sheet:
+  meta:
+    side_by_side: ["assets", "equity_liab"]
+    variant_hint: ["B01-DN", "B01-DNPN", "Balance sheet"]
+  expected_order_increasing: true
+  tolerate_missing_codes: true
+
+  sections:
+    assets:
+      codes_expected:
+        - 100
+        - 110; 111; 112
+        - 120; 121; 122; 123
+        - 130; 131; 131.1; 131.2; 132; 133; 134; 135; 136; 137; 138; 139
+        - 140; 141
+        - 150; 151; 151.1; 151.2; 152
+        - 190; 191; 192
+        - 200
+        - 210; 211; 212; 213; 214; 215; 216
+        - 220; 221; 222; 223; 224; 225
+        - 240; 241; 242; 243
+        - 250; 251; 252
+        - 260; 261; 262; 263
+        - 270
+      rules:
+        - eq: ["110", ["111","112"]]
+        - eq: ["130", ["131","131.1","131.2","132","133","134","135","136","137","138","-139"]]
+        - eq: ["140", ["141"]]
+        - eq: ["151", ["151.1","151.2"]]
+        - eq: ["150", ["151","152"]]
+        - eq: ["190", ["191","192"]]
+        - eq: ["100", ["110","120","130","140","150","190"]]
+        - eq: ["210", ["211","212","213","214","215","216"]]
+        - eq: ["220", ["221","222","223","224","225"]]
+        - eq: ["240", ["241","242","243"]]
+        - eq: ["250", ["251","252"]]
+        - eq: ["260", ["261","262","263"]]
+        - eq: ["200", ["210","220","240","250","260"]]
+        - eq: ["270", ["100","200"]]
+      soft_checks:
+        - non_negative: ["111","112","120","121","122","123","131","131.1","131.2","132","133","134","135","136","137","138","140","141","150","151","151.1","151.2","152","190","191","192","210","211","212","213","214","215","216","220","221","222","223","224","225","240","241","242","243","250","251","252","260","261","262","263"]
+        - may_negative: ["139"]
+        - same_value: [["140","141"]]
+        - approx_eq: {left: "ratio(end, begin)", right: 1.0, tolerance_ratio: 0.5}
+
+    equity_liab:
+      codes_expected:
+        - 300
+        - 310; 311; 312; 313; 314; 315; 316; 317; 318
+        - 320; 321; 322; 323; 324; 325; 326; 327; 328
+        - 329; 329.1; 329.2; 329.3
+        - 330
+        - 400
+        - 410; 411; 412; 413; 414; 415; 416
+        - 420; 421; 422; 423; 424
+        - 440
+      rules:
+        - eq: ["329", ["329.1","329.2","329.3"]]
+        - eq: ["300", ["310","320","329","330"]]
+        - eq: ["400", ["410","420"]]
+        - eq: ["440", ["300","400"]]
+      soft_checks:
+        - non_negative: ["311","312","313","314","315","316","317","318","321","322","323","324","325","326","327","328","329","329.1","329.2","329.3","330","410","411","412","413","414","415","416","420","421","422","423","424"]
+        - may_negative: ["421"]
+
+  # Đối chiếu tổng theo MÃ và theo TÊN
+  cross_sheet_rules:
+    - eq: ["assets.270", ["equity_liab.440"]]
+  cross_sheet_rules_by_name:
+    - equals:
+        left:  "Tổng tài sản"
+        right: "Tổng nguồn vốn"
+
+# =========================================================
+# KQ HOẠT ĐỘNG KINH DOANH – KHỐI BẢO HIỂM
+# =========================================================
+income_statement_insurance:
+  tolerate_missing_codes: true
+  codes_expected:
+    - 01; 01.1; 01.2; 01.3
+    - 02; 02.1; 02.2
+    - 03
+    - 04; 04.1; 04.2
+    - 10
+    - 11; 11.1; 11.2
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17; 17.1; 17.2
+    - 18
+    - 19
+  rules:
+    - eq: ["01", ["01.1","01.2","-01.3"]]
+    - eq: ["02", ["02.1","-02.2"]]
+    - eq: ["03", ["01","-02"]]
+    - eq: ["04", ["04.1","04.2"]]
+    - eq: ["10", ["03","04"]]
+    - eq: ["11", ["11.1","-11.2"]]
+    - eq: ["15", ["11","-12","13","-14"]]
+    - eq: ["17", ["17.1","17.2"]]
+    - eq: ["18", ["15","16","17"]]
+    - eq: ["19", ["10","-18"]]
+  soft_checks:
+    - non_negative: ["01.1","01.2","03","04","04.1","04.2","10","12"]
+    - may_negative: ["13","14","16"]
+
+# =========================================================
+# KQ KINH DOANH – TỔNG HỢP
+# =========================================================
+income_statement_total:
+  tolerate_missing_codes: true
+  codes_expected:
+    - 19
+    - 23; 24; 25
+    - 26
+    - 30
+    - 31; 32; 40
+    - 50; 51; 52; 60
+  rules:
+    - eq: ["25", ["23","-24"]]
+    - eq: ["30", ["19","25","-26"]]
+    - eq: ["40", ["31","-32"]]
+    - eq: ["50", ["30","40"]]
+    - eq: ["60", ["50","-51","-52"]]
+  soft_checks:
+    - may_negative: ["25","30","40","60"]
+
+# =========================================================
+# (Tuỳ chọn) Doanh thu theo nghiệp vụ → khớp mã 03
+# =========================================================
+revenue_by_line:
+  lines:
+    - code: DV_XECO
+    - code: DV_TAISAN
+    - code: DV_HANGHAI
+    - code: DV_SUC_KHOE
+    - code: DV_CHAY_NO
+    - code: DV_KHAC
+  fields: [written_premium, inward_reinsurance, outward_reinsurance, change_uep, net_premium]
+  rules:
+    - eq: ["net_premium", ["written_premium","inward_reinsurance","-outward_reinsurance","-change_uep"]]
+  cross_checks:
+    - equals:
+        left:  "sum(lines[*].net_premium)"
+        right: "income_statement_insurance.03"
