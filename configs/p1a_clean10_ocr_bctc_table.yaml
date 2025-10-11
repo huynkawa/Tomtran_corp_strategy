@@ -1,10 +1,9 @@
-version: 0.3
+version: 0.4
 
 globals:
+  # --- Đơn vị & schema mặc định ---
   currency: VND
   unit_multiplier: 1
-
-  # Schema cột chuẩn (pipe)
   column_names:
     code:  code
     name:  name
@@ -12,7 +11,7 @@ globals:
     end:   end
     begin: begin
 
-  # Nhận diện trang là "bảng BCTC"
+  # --- Phát hiện trang "có bảng BCTC" ---
   detection_tokens:
     must_have_any:
       - "Mã số"
@@ -29,22 +28,29 @@ globals:
       - "B02-DN"
       - "BCTC"
       - "Thuyết minh"
+      - "As at"
+      - "As of"
+      - "Balance sheet"
 
-  # Ranh giới cột theo % bề rộng (2 biến thể)
+  # --- Padding cho ROI bảng (để giữ dòng tiêu đề cột số) ---
+  roi_pad_top: 120    # code sẽ lấy: yaml_table.globals.roi_pad_top (mặc định 40 nếu thiếu)
+  roi_pad_lr: 8       # chừa lề trái/phải một chút
+
+  # --- Biên cột theo % bề rộng trang (tuỳ biến) ---
   column_x_percent:
-    five_cols:         # CODE | NAME | NOTE | END | BEGIN
+    five_cols:          # CODE | NAME | NOTE | END | BEGIN
       code:  [0.00, 0.09]
       name:  [0.09, 0.72]
       note:  [0.72, 0.80]
       end:   [0.80, 0.91]
       begin: [0.91, 1.00]
-    four_cols:         # CODE | NAME | END | BEGIN
+    four_cols:          # CODE | NAME | END | BEGIN
       code:  [0.00, 0.09]
       name:  [0.09, 0.78]
       end:   [0.78, 0.89]
       begin: [0.89, 1.00]
 
-  # Chuẩn hoá La Mã / tiêu đề cấp
+  # --- La mã & tiêu đề cấp (normalize nhẹ) ---
   roman_normalize:
     "VỊ": "VI"
     "lll": "III"
@@ -57,7 +63,7 @@ globals:
     "VI.": "VI."
     "VII.": "VII."
 
-  # Alias mã số hay méo OCR
+  # --- Alias mã số hay bị méo OCR ---
   code_aliases:
     "154":   "151"
     "161.2": "151.2"
@@ -69,12 +75,11 @@ globals:
     "1511":  "151.1"
     "1512":  "151.2"
     "1411":  "141"
-    # biến thể có dấu gạch
     "329-1": "329.1"
     "329-2": "329.2"
     "329-3": "329.3"
 
-  # Chuẩn hoá TÊN danh mục (để tra cứu khi mã méo/thiếu)
+  # --- Alias TÊN (không dấu cũng khớp do code đã bỏ dấu khi so khớp) ---
   name_aliases:
     "Tong tai san": "Tổng tài sản"
     "Nguon von": "Tổng nguồn vốn"
@@ -83,7 +88,7 @@ globals:
     "Tai san ngan han": "Tài sản ngắn hạn"
     "Tai san dai han": "Tài sản dài hạn"
 
-  # Ràng buộc mã ↔ tên chuẩn (giúp lookup chéo)
+  # --- Mã ↔ tên chuẩn để đối chiếu chéo (hint) ---
   code_name_pairs:
     "100": "Tài sản ngắn hạn"
     "200": "Tài sản dài hạn"
@@ -92,71 +97,52 @@ globals:
     "400": "Vốn chủ sở hữu"
     "440": "Tổng nguồn vốn"
 
-  # Sơ đồ cha–con theo TÊN (song song rule theo mã)
+  # --- Cây cha–con theo TÊN (song song rule theo mã) ---
   parent_children_by_name:
     "Tổng tài sản": ["Tài sản ngắn hạn", "Tài sản dài hạn"]
     "Tổng nguồn vốn": ["Nợ phải trả", "Vốn chủ sở hữu"]
 
-  # Chuẩn hoá số (gom nghìn, sửa lỗi OCR phổ biến)
+  # --- Chuẩn hoá số Việt + vá lỗi OCR phổ biến ---
   number_cleanup:
     drop_chars: [" ", "\u00A0", "\t", "£", "¥", "₫"]
     fix_patterns:
-      - from: "([0-9]),([0-9]{3})(?![0-9])"
-        to:   "\\1.\\2"               # 1,234 → 1.234
-      - from: "(\\d)\\.(\\d{1,2})\\.(\\d{3})(\\.|$)"
-        to:   "\\1\\2.\\3\\4"         # 150.9417,655,.545 → 1509417.655.545
-      - from: "(?<=\\d)\\s+(?=\\d)"
-        to:   ""                      # xoá khoảng trắng giữa số
-      - from: "[\\.,]{2,}"
-        to:   "."                     # chuẩn hoá dấu lặp
-      - from: "(?<=[^\\d])[ZIlO](?=\\d)"
-        to:   ""                      # ký tự lẫn vào số
-      - from: "(?<=\\d),(?=\\d{3}(\\D|$))"
-        to:   "."                     # 1,234 → 1.234
-      - from: "\\((\\d[\\d\\.,]*)\\)"
-        to:   "-\\1"                  # (1.234) → -1.234
+      - {from: "([0-9]),([0-9]{3})(?![0-9])", to: "\\1.\\2"}           # 1,234 → 1.234
+      - {from: "(\\d)\\.(\\d{1,2})\\.(\\d{3})(\\.|$)", to: "\\1\\2.\\3\\4"} # 150.9417,655,.545 → 1509417.655.545
+      - {from: "(?<=\\d)\\s+(?=\\d)", to: ""}                           # xoá khoảng trắng giữa số
+      - {from: "[\\.,]{2,}", to: "."}                                   # chấm/phẩy lặp
+      - {from: "(?<=[^\\d])[ZIlO](?=\\d)", to: ""}                      # ký tự lẫn vào số
+      - {from: "(?<=\\d),(?=\\d{3}(\\D|$))", to: "."}                   # 1,234 → 1.234
+      - {from: "\\((\\d[\\d\\.,]*)\\)", to: "-\\1"}                     # (1.234) → -1.234
     thousand_grouping: true
 
-  # Chính sách tự sửa (bật để "trả về số đúng")
+  # --- Policy tự sửa khi validator thấy lệch ---
   autofix_policy:
-    fix_parent_from_children: true      # SỬA CHA = tổng CON khi lệch
+    fix_parent_from_children: true
     fix_minor_digit_off_by: true
     fix_leading_extra_digit: true
     clamp_negative_where_forbidden: true
 
-  # Cho phép override theo công ty (tuỳ chọn)
-  company_overrides: {}
-
-  # bổ sung (giảm rác header/caption)
+  # --- Lọc rác header/caption (code sẽ bỏ dấu trước khi đối chiếu) ---
   drop_if_name_contains:
-    - "Bảng cân đối kế toán"
-    - "Mẫu số"
-    - "Ban hành theo"
-    - "Đơn vị tính"
-    - "As at"
-    - "As of"
-    - "For the year ended"
+    - "bảng cân đối kế toán"
+    - "mẫu số"
+    - "ban hành theo"
+    - "đơn vị tính"
+    - "đơn vị"
+    - "as at"
+    - "as of"
+    - "for the year ended"
+    - "b01-dnpnt"
+    - "b01-dn"
+    - "bctc"
+    - "tại ngày"
+    - "vnd"
+    - "số cuối năm"
+    - "số đầu năm"
+    - "tài sản"
+    - "nguồn vốn"
 
-  number_cleanup:
-    thousand_grouping: true
-
-
-
-# --- Phần rule dưới đây dùng cho validator ---
-rule_types:
-  eq: {tolerance: 0}
-  approx_eq: {tolerance_ratio: 0.002}
-  equals: {tolerance: 0}
-  non_negative: {}
-  may_negative: {}
-  increasing_order: {}
-  same_value: {}
-  required_codes: {}
-  unit_is: {}
-  note_is: {}
-  monotonic_group: {}
-
-# công thức cross vào YAML OPEN AI
+  # --- Công thức cross-check cho cả trang (code đọc từ globals.cross_formulas) ---
   cross_formulas:
     - name: "Tài sản dài hạn"
       end:   "200 = 210 + 220 + 250 + 260"
@@ -165,6 +151,8 @@ rule_types:
       end:   "270 = 100 + 200"
       start: "270 = 100 + 200"
 
+  # --- Cho phép override theo công ty (tuỳ chọn) ---
+  company_overrides: {}
 
 # =========================================================
 # BẢNG CÂN ĐỐI KẾ TOÁN (B01-DN/B01-DNPN)

@@ -6,6 +6,7 @@ UI ChatGPT-like cho TOMTRAN Chatbot
 - Ô chat NẰM GIỮA header và strap; Enter = gửi (Shift+Enter = xuống dòng)
 - Khung chat + ô nhập thu gọn, responsive iPad/mobile
 - Có Browse files để upload (PDF/DOCX/TXT)
+- Theme lấy màu từ YAML (light/dark) — không hard-code CSS tối nữa
 """
 
 import base64
@@ -22,7 +23,7 @@ USE_FIXED_CHAT_INPUT = False
 LOGO_RELATIVE_PATH = Path("assets") / "Dancing Chatbot.mp4"
 
 PROMPT_TEXT = "Chúng ta nên bắt đầu từ đâu - Hỏi bất cứ điều gì"
-PROMPT_COLOR = "#FFFFFF"
+PROMPT_COLOR = "#FFFFFF"  # có thể đổi trong YAML nếu muốn
 PROMPT_FONT_REM = 1.20
 
 ALLOW_UPLOAD = True
@@ -83,13 +84,24 @@ def render_ui(title: str = "TOMTRANCHATBOT"):
     chat_height_vh = theme.CHAT_HEIGHT_VH_EMPTY if is_empty else theme.CHAT_HEIGHT_VH_NONEMPTY
 
     # =================== CSS ===================
+    # Lấy màu từ YAML, có giá trị mặc định an toàn
+    bg   = getattr(theme, "BG_COLOR",   "#0E1117")
+    card = getattr(theme, "CARD_COLOR", "#1C1F26")
+    line = getattr(theme, "LINE_COLOR", "#2E2E2E")
+    text = getattr(theme, "TEXT_COLOR", "#FFFFFF")
+
+    user_bg = getattr(theme, "BUBBLE_USER_BG", "#2A2D34")
+    bot_bg  = getattr(theme, "BUBBLE_BOT_BG",  "#1E1F25")
+    in_bg   = getattr(theme, "INPUT_BG", "#1C1F26")
+    in_tx   = getattr(theme, "INPUT_TEXT", "#FFFFFF")
+
     st.markdown(f"""
     <style>
     :root {{
-        --bg:#0E1117; --card:#1C1F26; --line:#2E2E2E; --text:#fff; --muted:#bfbfbf;
-        --chat-width-desktop: {theme.CHAT_WIDTH_DESKTOP_PX}px;
-        --chat-width-tablet:  {theme.CHAT_WIDTH_TABLET_PX}px;
-        --chat-width-mobile:  {theme.CHAT_WIDTH_MOBILE_PCT}%;
+        --bg:{bg}; --card:{card}; --line:{line}; --text:{text}; --muted:#6B7280;
+        --chat-width-desktop:{theme.CHAT_WIDTH_DESKTOP_PX}px;
+        --chat-width-tablet:{theme.CHAT_WIDTH_TABLET_PX}px;
+        --chat-width-mobile:{theme.CHAT_WIDTH_MOBILE_PCT}%;
     }}
     body {{ background-color: var(--bg); color: var(--text); }}
 
@@ -164,9 +176,25 @@ def render_ui(title: str = "TOMTRANCHATBOT"):
         border-radius:12px;
         padding:{theme.CHAT_PAD_V_REM}rem {theme.CHAT_PAD_H_REM}rem;
     }}
-    .user-message,.bot-message{{ padding:12px 16px; border-radius:12px; margin:8px 0; max-width:75%; }}
-    .user-message{{ background:#2A2D34; align-self:flex-end; text-align:right; }}
-    .bot-message{{ background:#1E1F25; align-self:flex-start; text-align:left; }}
+
+    /* Bong bóng chat — dùng màu từ YAML */
+    .user-message, .bot-message{{ padding:12px 16px; border-radius:12px; margin:8px 0; max-width:75%; }}
+
+    .user-message{{
+        background:{user_bg};
+        color: var(--text);
+        border: 1px solid var(--line);
+        text-align: right;       /* user căn phải */
+        align-self: flex-end;    /* nếu đang dùng flex layout */
+    }}
+
+    .bot-message{{
+        background:{bot_bg};
+        color: var(--text);
+        border: 1px solid var(--line);
+        text-align: left;
+        align-self: flex-start;
+    }}
 
     .prompt-hint{{ text-align:center; color:{PROMPT_COLOR}; font-weight:700; font-size:{PROMPT_FONT_REM}rem; margin:.45rem 0 .55rem 0; }}
 
@@ -176,10 +204,17 @@ def render_ui(title: str = "TOMTRANCHATBOT"):
         max-width: var(--chat-width-desktop);
         margin-left:auto !important; margin-right:auto !important; z-index:2;
     }}
-    div[data-baseweb="textarea"] textarea{{
+
+    /* Ô nhập (form center) — dùng màu từ YAML */
+    div[data-baseweb="textarea"] textarea,
+    textarea[data-testid="stTextarea"]{{
         min-height:84px !important; font-size:1.06rem !important; line-height:1.45 !important;
-        background:var(--card) !important; color:#fff !important; border-radius:16px !important;
-        padding-top:.9rem !important; box-shadow:0 0 10px rgba(0,0,0,.35) !important;
+        background:{in_bg} !important; color:{in_tx} !important; border-radius:16px !important;
+        padding-top:.9rem !important; box-shadow:none !important; border:1px solid var(--line) !important;
+    }}
+    div[data-baseweb="textarea"] textarea::placeholder,
+    textarea[data-testid="stTextarea"]::placeholder{{
+        color:{('#' + in_tx.strip('#') + '99') if isinstance(in_tx, str) else '#6B728099'} !important;
     }}
 
     /* Responsive */
@@ -312,11 +347,11 @@ def render_ui(title: str = "TOMTRANCHATBOT"):
 
     # ======= Banner chữ / đường kẻ ngay dưới header =======
     mode = getattr(theme, "HEADER_DIVIDER_MODE", "line")
-    text = getattr(theme, "HEADER_DIVIDER_TEXT", "").strip()
-    banner_html = f'<div class="tt-banner">{text}</div>'
+    text_div = getattr(theme, "HEADER_DIVIDER_TEXT", "").strip()
+    banner_html = f'<div class="tt-banner">{text_div}</div>'
     line_html   = '<hr class="tt-hr"/>'
     st.markdown(
-        banner_html if (mode == "text" and text) else (line_html if getattr(theme, "SHOW_HEADER_DIVIDER", True) else ""),
+        banner_html if (mode == "text" and text_div) else (line_html if getattr(theme, "SHOW_HEADER_DIVIDER", True) else ""),
         unsafe_allow_html=True,
     )
 

@@ -1,287 +1,79 @@
 ---
 # =========================================================
-# YAML VALIDATOR CHO BCTC DN BẢO HIỂM PHI NHÂN THỌ (VN)
-# Dùng làm YAML TABLE duy nhất (BCTC ưu tiên, bảng thường vẫn an toàn)
+# YAML CLEAN CHO VĂN BẢN (TEXT) — dùng với apply_yaml_clean(..., mode="text")
+# Tập trung loại header/footer, rác OCR, gộp khoảng trắng; KHÔNG đụng tới số
 # =========================================================
-version: 0.2
+version: 0.4
 
 globals:
-  currency: VND
-  unit_multiplier: 1
+  text_cleanup:
+    # 1) Ký tự rác phổ biến trong scan/PDF
+    drop_chars:
+      - "\u00A0"   # non-breaking space
+      - "¦"
+      - "•"
+      - ""
+      - ""
+      - "∙"
+      - "·"
+      - "│"
+      - "┃"
+      - "┃"
+      - "丨"
 
-  # (tuỳ chọn) đặt tên logic cho các cột — không bắt buộc
-  column_names:
-    code:  code
-    name:  name
-    note:  note
-    end:   end       # Số cuối năm
-    begin: begin     # Số đầu năm
-
-  # Ranh giới cột theo TỶ LỆ bề rộng ảnh (ổn định khi ảnh có độ rộng khác nhau)
-  column_x_percent:
-    code:  [0.00, 0.08]   # 0–8%
-    name:  [0.08, 0.70]   # 8–70%
-    note:  [0.70, 0.78]   # 70–78%
-    end:   [0.78, 0.90]   # 78–90%
-    begin: [0.90, 1.00]   # 90–100%
-
-  # Chuẩn hoá văn bản/La Mã để ghép đúng hàng
-  roman_normalize:
-    "VỊ": "VI"
-    "lll": "III"
-    "ll": "II"
-    "I.": "I."
-    "II.": "II."
-    "III.": "III."
-    "IV.": "IV."
-    "V.": "V."
-    "VI.": "VI."
-    "VII.": "VII."
-
-  # Mapping mã số hay bị OCR sai
-  code_aliases:
-    "154":   "151"
-    "161.2": "151.2"
-    "161.1": "151.1"
-    "3291":  "329.1"
-    "3292":  "329.2"
-    "3293":  "329.3"
-    "1311":  "131.1"
-    "1511":  "151.1"
-    "1512":  "151.2"
-    "1411":  "141"
-
-  # Chuẩn hoá số: bỏ ký tự rác, chấm/phẩy sai vị trí (tăng cường)
-  number_cleanup:
-    drop_chars: [" ", ",", "£", "¥", "₫"]   # xoá rồi sẽ reformat nhóm nghìn
+    # 2) Mẫu thay thế / xoá theo regex (toàn cục)
+    #    Lưu ý: code sẽ chạy re.sub tuần tự theo thứ tự dưới đây
     fix_patterns:
-      # 1) đổi phẩy cuối nhóm -> chấm (123,456 -> 123.456)
-      - from: "([0-9])[,]{1}([0-9]{3})(?![0-9])"
-        to:   "\\1.\\2"
-      # 2) case đặc biệt: 1.07.123 -> 107.123
-      - from: "(\\d)\\.(\\d{1,2})\\.(\\d{3})(\\.|$)"
-        to:   "\\1\\2.\\3\\4"
-      # 3) xoá khoảng trắng chen giữa số (33.057.409. 157 -> 33.057.409.157)
-      - from: "(?<=\\d)\\s+(?=\\d)"
+      # --- dọn header/footer & meta của biểu mẫu ---
+      - from: "(?mi)^.*\\b(Mẫu\\s*số|Mau\\s*so)\\b.*$\\n?"
         to: ""
-      # 4) gộp dãy .. hoặc ,, → .
-      - from: "[\\.,]{2,}"
-        to: "."
-      # 5) ký tự chữ lạc trong cụm số (Z, I, l, O…)
-      - from: "(?<=[^\\d])[ZIlO](?=\\d)"
+      - from: "(?mi)^.*\\b(B01\\s*-?\\s*DN(P|PN)?T?)\\b.*$\\n?"
         to: ""
-      # 6) phẩy ngăn nghìn → chấm (160.947,655,.545 → 160.947.655.545)
-      - from: "(?<=\\d),(?=\\d{3}(\\D|$))"
-        to: "."
-    thousand_grouping: true
+      - from: "(?mi)^.*\\b(B02\\s*-?\\s*DN)\\b.*$\\n?"
+        to: ""
+      - from: "(?mi)^.*\\b(BCTC|Báo\\s*cáo\\s*tài\\s*chính|Bao\\s*cao\\s*tai\\s*chinh)\\b.*$\\n?"
+        to: ""
+      - from: "(?mi)^.*\\b(Đơn\\s* vị(\\s*tính)?|Don\\s*vi(\\s*tinh)?)\\b.*$\\n?"
+        to: ""
+      - from: "(?mi)^.*\\b(Ban\\s*hành\\s*theo|Ban\\s*hanh\\s*theo)\\b.*$\\n?"
+        to: ""
+      - from: "(?mi)^.*\\b(As\\s+at|As\\s+of|For\\s+the\\s+year\\s+ended)\\b.*$\\n?"
+        to: ""
+      - from: "(?mi)^\\s*(Trang|Page)\\s*\\d+\\s*$\\n?"
+        to: ""
 
-  # Chính sách "tự sửa": (hiện pipeline chưa chạy validator rule; để sẵn)
-  autofix_policy:
-    fix_parent_from_children: false
-    fix_minor_digit_off_by: true
-    fix_leading_extra_digit: true
-    clamp_negative_where_forbidden: true
+      # --- dòng kẻ, gạch ngang, chữ trang trí ---
+      - from: "(?m)^[ \\t]*[-_]{3,}.*$\\n?"
+        to: ""
+      - from: "(?m)^[ \\t]*={3,}.*$\\n?"
+        to: ""
 
-# ========== KHAI BÁO KIỂU RULE CHUNG (dự phòng cho validator) ==========
-rule_types:
-  eq:          {tolerance: 0}         # A = B + C - D
-  approx_eq:   {tolerance_ratio: 0.002}
-  equals:      {tolerance: 0}
-  non_negative: {}
-  may_negative: {}
-  increasing_order: {}
-  same_value: {}
-  required_codes: {}
-  unit_is: {}
-  note_is: {}
-  monotonic_group: {}
+      # --- nối từ bị ngắt dòng bằng dấu gạch ngang (hyphenation) ---
+      #     ví dụ: "kế to-\nán" -> "kế toán"
+      - from: "(?<!\\d)-\\s*\\n\\s*(?=[A-Za-zÀ-ỹĐđ])"
+        to: ""
+      # --- xoá khoảng trắng thừa trước ngắt dòng ---
+      - from: "[ \\t]+\\n"
+        to: "\n"
 
-# =========================================================
-# 1) BẢNG CÂN ĐỐI KẾ TOÁN (B01-DN/B01-DNPN)
-# =========================================================
-balance_sheet:
-  meta:
-    side_by_side: ["assets", "equity_liab"]
-  expected_order_increasing: true
-  sections:
+      # --- chuẩn hoá dấu cách & khoảng trắng ---
+      - from: "[\\t ]{2,}"
+        to: " "
+      - from: "\\u200b|\\u200c|\\u200d"   # zero-width chars
+        to: ""
 
-    assets:
-      codes_expected:
-        # A. Tài sản ngắn hạn
-        - 100
-        - 110; 111; 112
-        - 120; 121; 122; 123
-        - 130; 131; 131.1; 131.2; 132; 133; 134; 135; 136; 137; 138; 139
-        - 140; 141
-        - 150; 151; 151.1; 151.2; 152
-        - 190; 191; 192
-        # B. Tài sản dài hạn
-        - 200
-        - 210; 211; 212; 213; 214; 215; 216
-        - 220; 221; 222; 223; 224; 225
-        - 240; 241; 242; 243
-        - 250; 251; 252
-        - 260; 261; 262; 263
-        # TỔNG CỘNG TÀI SẢN
-        - 270
+      # --- dọn các cặp ký tự OCR lẫn lộn hay gặp ---
+      - from: "I\\s*\\|\\s*I"   # I | I
+        to: "II"
+      - from: "\\bll\\b"
+        to: "II"
+      - from: "\\blll\\b"
+        to: "III"
 
-      rules:
-        # Tổng - con (ngắn hạn)
-        - eq: ["110", ["111","112"]]
-        - eq: ["130", ["131","131.1","131.2","132","133","134","135","136","137","138","-139"]]
-        - eq: ["140", ["141"]]           # nếu 141 tồn tại → 140 == 141
-        - eq: ["150", ["151","152"]]     # 151 có thể gồm 151.1 + 151.2
-        - eq: ["151", ["151.1","151.2"]]
-        - eq: ["190", ["191","192"]]
-        - eq: ["100", ["110","120","130","140","150","190"]]
+      # --- gom các dấu gạch đầu dòng lạ về dấu "-" chuẩn ---
+      - from: "[•●◦▪▫►■□◆◇¤·]"
+        to: "-"
 
-        # Tổng - con (dài hạn)
-        - eq: ["210", ["211","212","213","214","215","216"]]
-        - eq: ["220", ["221","222","223","224","225"]]
-        - eq: ["240", ["241","242","243"]]
-        - eq: ["250", ["251","252"]]
-        - eq: ["260", ["261","262","263"]]
-        - eq: ["200", ["210","220","240","250","260"]]
-
-        # Tổng cộng
-        - eq: ["270", ["100","200"]]
-
-      soft_checks:
-        - non_negative: ["111","112","120","121","122","123","131","131.1","131.2","132","133","134","135","136","137","138","140","141","150","151","151.1","151.2","152","190","191","192","210","211","212","213","214","215","216","220","221","222","223","224","225","240","241","242","243","250","251","252","260","261","262","263"]
-        - may_negative: ["139"]          # dự phòng
-        - same_value: [["140","141"]]    # nếu cả hai xuất hiện phải bằng nhau
-        - approx_eq:
-            left: "ratio(end, begin)"
-            right: 1.0
-            tolerance_ratio: 0.5    # cho phép biến động ±50%
-
-    equity_liab:
-      codes_expected:
-        # A. Nợ phải trả
-        - 300
-        - 310; 311; 312; 313; 314; 315; 316; 317; 318
-        - 320; 321; 322; 323; 324; 325; 326; 327; 328
-        - 329; 329.1; 329.2; 329.3
-        - 330
-        # B. Vốn chủ sở hữu
-        - 400
-        - 410; 411; 412; 413; 414; 415; 416
-        - 420; 421; 422; 423; 424
-        # TỔNG CỘNG NGUỒN VỐN
-        - 440
-
-      rules:
-        - eq: ["329", ["329.1","329.2","329.3"]]
-        - eq: ["300", ["310","320","329","330"]]
-        - eq: ["400", ["410","420"]]
-        - eq: ["440", ["300","400"]]
-
-      soft_checks:
-        - non_negative: ["311","312","313","314","315","316","317","318","321","322","323","324","325","326","327","328","329","329.1","329.2","329.3","330","410","411","412","413","414","415","416","420","421","422","423","424"]
-        - may_negative: ["421"]          # LNST chưa phân phối có thể âm
-
-  # Đối chiếu chéo tổng tài sản = tổng nguồn vốn
-  cross_sheet_rules:
-    - eq: ["assets.270", ["equity_liab.440"]]
-
-# =========================================================
-# 2) KẾT QUẢ HOẠT ĐỘNG KINH DOANH – KHỐI BẢO HIỂM
-# =========================================================
-income_statement_insurance:
-  codes_expected:
-    - 01; 01.1; 01.2; 01.3
-    - 02; 02.1; 02.2
-    - 03
-    - 04; 04.1; 04.2
-    - 10
-    - 11; 11.1; 11.2
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17; 17.1; 17.2
-    - 18
-    - 19
-  rules:
-    - eq: ["01", ["01.1","01.2","-01.3"]]           # doanh thu phí BH (giảm DP phí)
-    - eq: ["02", ["02.1","-02.2"]]                   # phí nhượng (giảm DP phí nhượng)
-    - eq: ["03", ["01","-02"]]                       # doanh thu phí thuần
-    - eq: ["04", ["04.1","04.2"]]                    # DT khác & HH nhượng
-    - eq: ["10", ["03","04"]]                        # DT thuần HĐKD BH
-    - eq: ["11", ["11.1","-11.2"]]                   # chi bồi thường (trừ thu hồi)
-    - eq: ["15", ["11","-12","13","-14"]]            # tổng chi bồi thường
-    - eq: ["17", ["17.1","17.2"]]                    # chi phí khác HĐKD BH
-    - eq: ["18", ["15","16","17"]]                   # tổng chi phí HĐKD BH
-    - eq: ["19", ["10","-18"]]                       # LN gộp HĐKD BH
-  soft_checks:
-    - non_negative: ["01.1","01.2","03","04","04.1","04.2","10","12"]
-    - may_negative: ["13","14","16"]                 # dự phòng tăng/giảm
-
-# =========================================================
-# 3) KQKD – TỔNG HỢP
-# =========================================================
-income_statement_total:
-  codes_expected:
-    - 19             # từ khối bảo hiểm
-    - 23; 24; 25     # tài chính
-    - 26             # QLDN
-    - 30
-    - 31; 32; 40
-    - 50; 51; 52; 60
-  rules:
-    - eq: ["25", ["23","-24"]]                       # LN tài chính
-    - eq: ["30", ["19","25","-26"]]                  # LN thuần từ HĐKD
-    - eq: ["40", ["31","-32"]]                       # KQ từ HĐ khác
-    - eq: ["50", ["30","40"]]                        # LNTT
-    - eq: ["60", ["50","-51","-52"]]                 # LNST
-  soft_checks:
-    - may_negative: ["25","30","40","60"]            # có thể âm theo kỳ
-
-# =========================================================
-# 4) BẢNG DOANH THU THEO NGHIỆP VỤ (tuỳ doanh nghiệp)
-# =========================================================
-revenue_by_line:
-  lines:
-    - code: DV_XECO   # xe cơ giới
-    - code: DV_TAISAN # tài sản kỹ thuật
-    - code: DV_HANGHAI
-    - code: DV_SUC_KHOE
-    - code: DV_CHAY_NO
-    - code: DV_KHAC
-  fields:
-    - written_premium
-    - inward_reinsurance
-    - outward_reinsurance
-    - change_uep
-    - net_premium
-  rules:
-    - eq: ["net_premium", ["written_premium","inward_reinsurance","-outward_reinsurance","-change_uep"]]
-  cross_checks:
-    - equals:
-        left: "sum(lines[*].net_premium)"
-        right: "income_statement_insurance.03"
-
-# =========================================================
-# 5) THUYẾT MINH – GÁN MÃ (tuỳ chọn, nếu bạn trích được cột TM)
-# =========================================================
-notes_mapping:
-  expect:
-    "110": "4"
-    "123": "5.2"
-    "130": "6"
-    "151.1": "7"
-    "190": "15.1"
-
-# =========================================================
-# 6) MỘT VÀI AUTOFIX TÌNH HUỐNG OCR PHỔ BIẾN (tuỳ chọn)
-# =========================================================
-autofix:
-  - when:  "code == '130' and contains(end, '9417,655,.545')"
-    do:    "end = '150.941.655.545'"
-  - when:  "code == '120' and startswith(end, '7.107')"
-    do:    "end = replace_prefix(end, '7', '1')"
-  - when:  "code == '141' and abs(begin - 1479852774) <= 20000"
-    do:    "begin = 1479852774"
-  - when:  "raw_code in ['154','161.2','161.1']"
-    do:    "code = alias(raw_code)"
+      # --- nén nhiều dòng trống liên tiếp còn 1 ---
+      - from: "(?m)^(?:\\s*\\n){3,}"
+        to: "\n\n"

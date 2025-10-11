@@ -39,6 +39,8 @@ from tqdm import tqdm
 import yaml
 import pandas as pd
 from sklearn.cluster import KMeans
+# ---- RAW toggle (bỏ qua YAML & prefilter) ----
+P1A_RAW_MODE = True   # True = chạy thô, False = chạy theo YAML
 
 # --- PaddleOCR (optional) ---
 try:
@@ -81,7 +83,7 @@ YAML_TEXT_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\config
 # ====== OCR CONFIG ======
 OCR_LANG_DEFAULT = "vie+eng"
 OCR_CFG_SENTENCE = "--psm 4 -c preserve_interword_spaces=1"
-OCR_CFG_TSV      = "--psm 4 -c preserve_interword_spaces=1"
+OCR_CFG_TSV = "--psm 6 -c preserve_interword_spaces=1"
 
 # ====== REGEX & HELPERS ======
 CODE_LINE = re.compile(r"(?m)^(?:\s*\|?\s*)\d{3}(?:\.\d+)?\b")   # 131, 151.1...
@@ -383,19 +385,25 @@ def iter_pages(path: str, dpi: int):
         return
 
 def _looks_like_table(text: str, yaml_table: dict) -> bool:
-    if not text: return False
+    if not text:
+        return False
+    # Loại trừ rõ phần ý kiến kiểm toán / văn bản thuần
     if re.search(r"Ý kiến của Ki(ê|e)m toán|Ki(ê|e)m toán viên|Auditor'?s opinion", text, re.I):
         return False
+
     det = (yaml_table.get("globals") or {}).get("detection_tokens") or {}
     must_any = det.get("must_have_any") or []
-    if any(re.search(re.escape(tok), text, re.I) for tok in must_any):
-        return True
-    code_hits = len(CODE_LINE.findall(text))
+
+    hit_tokens = any(re.search(re.escape(tok), text, re.I) for tok in must_any)
+
+    code_hits   = len(CODE_LINE.findall(text))
     money_lines = sum(1 for ln in text.splitlines() if len(MONEY.findall(ln)) >= 2)
-    if code_hits >= 3 and money_lines >= 3:
-        return True
-    kw = r"(mã\s*số|ma\s*so|chỉ\s*tiêu|chi\s*tieu|thuyết\s*minh|thuyet\s*minh|as\s+at|vnd|B0?1\s*-\s*DNPNT)"
-    return re.search(kw, text, re.I) is not None
+
+    # Siết ngưỡng: yêu cầu dày đặc hơn để coi là bảng toàn trang
+    dense_struct = (code_hits >= 4 and money_lines >= 4)
+
+    return bool(hit_tokens or dense_struct)
+
 
 def is_table_page(txt: str, yaml_table: dict) -> bool:
     return _looks_like_table(txt, yaml_table)
@@ -446,6 +454,9 @@ def _cluster_rows(tsv_df: pd.DataFrame, y_tol: int):
 
 _HEADER_HINTS_END   = re.compile(r"(s[ốo]\s*c[uú]ối\s*n[ăa]m|ending\s*balance|current\s*year)", re.I)
 _HEADER_HINTS_BEGIN = re.compile(r"(s[ốo]\s*đ[ầa]u\s*n[ăa]m|beginning\s*balance|prior\s*year)", re.I)
+# Header kiểu ngày/VND (UIC…): "31/12/2024  VND" | "31/12/2023  VND"
+_HEADER_HINTS_DATE  = re.compile(r"(?:\b31|0?[1-9]|[12]\d|3[01])\s*[\/\-.]\s*(?:0?[1-9]|1[0-2])\s*[\/\-.]\s*20\d{2}", re.I)
+_HEADER_HINTS_VND   = re.compile(r"\bVND\b|\bVNĐ\b", re.I)
 
 def _anchor_numeric_splits(tsv_df: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
     if tsv_df.empty: return None, None
@@ -457,10 +468,23 @@ def _anchor_numeric_splits(tsv_df: pd.DataFrame) -> Tuple[Optional[float], Optio
     end_x = []; begin_x = []
     for _, r in head.iterrows():
         txt = _norm_word(str(r["text"]))
+
+        # Case 1: cụm "Số cuối năm / Số đầu năm"
         if _HEADER_HINTS_END.search(txt):   end_x.append(r["cx"])
         if _HEADER_HINTS_BEGIN.search(txt): begin_x.append(r["cx"])
+
+        # Case 2: header kiểu "31/12/2024  VND | 31/12/2023  VND"
+        if not end_x or not begin_x:
+            if _HEADER_HINTS_DATE.search(txt) and _HEADER_HINTS_VND.search(txt):
+                # heuristics: cột bên trái (năm hiện tại) = END, cột bên phải = BEGIN
+                # dùng cx để chia 2 cụm theo median
+                (end_x if r["cx"] < head["cx"].median() else begin_x).append(r["cx"])
+
+    # nếu sau tất cả vẫn không tìm được, bỏ neo
     if not end_x or not begin_x:
         return None, None
+
+    
     sx_end   = float(np.median(end_x))
     sx_begin = float(np.median(begin_x))
     split1 = max(180, min(sx_end, sx_begin) - 30)
@@ -502,6 +526,72 @@ def _row_is_valid(code, name, end, begin):
     if (end and begin): return True
     return len((name or "").strip()) >= 7
 
+
+def _extract_code_name_note(left_txt: str) -> Tuple[str, str, str]:
+    """
+    Tách CODE | NAME | NOTE từ phần trái (không cột số).
+    NOTE nhận dạng dạng '5', '5.2', '10(a)' ở cuối tên.
+    """
+    s = (left_txt or "").strip()
+    code = ""; name = s; note = ""
+    m = re.match(r"^\s*(\d{3}(?:\.\d+)?)\b\s*(.*)$", s)
+    if m:
+        code = m.group(1).strip()
+        name = (m.group(2) or "").strip()
+    mn = re.search(r"(?:^|\s)(\d+(?:\.\d+)?(?:\([a-z]\))?)\s*$", name, flags=re.I)
+    if mn and (len(name) - mn.start()) <= 8:
+        note = mn.group(1).strip()
+        name = name[:mn.start()].strip()
+    return code, name, note
+
+def _assign_cols_dynamic(row_df, split1, split2, page_w) -> List[str]:
+    """
+    Map động token theo vị trí: [CODE | NAME | NOTE | END | BEGIN]
+    - Không ép 5 cột cứng; nếu không có NOTE thì để rỗng.
+    - Nếu chỉ có 1 cột số, gán vào END, BEGIN để trống.
+    """
+    left_tokens, mid_tokens, end_tokens, begin_tokens = [], [], [], []
+    for _, t in row_df.sort_values("cx").iterrows():
+        cx = float(t["cx"])
+        s  = _norm_word(str(t["text"]))
+        s  = _clean_name_token(s)
+        if not s:
+            continue
+        if cx < (split1 - 16):
+            left_tokens.append(s)
+        elif cx < (split2 - 16):
+            if _is_numberish(s): end_tokens.append(s)
+            else:                mid_tokens.append(s)
+        elif cx > (split2 + 16):
+            if _is_numberish(s): begin_tokens.append(s)
+            else:                mid_tokens.append(s)
+        else:
+            if abs(cx - split1) < abs(cx - split2):
+                end_tokens.append(s)
+            else:
+                begin_tokens.append(s)
+
+    left_txt = " ".join([t for t in left_tokens + mid_tokens if t]).strip()
+    code, name, note = _extract_code_name_note(left_txt)
+
+    end_val   = _fix_vn_number(" ".join(end_tokens))
+    begin_val = _fix_vn_number(" ".join(begin_tokens))
+
+    if not end_val and not begin_val:
+        e2, b2 = _fallback_two_num_by_hist(row_df, page_w=page_w)
+        end_val   = _fix_vn_number(e2)
+        begin_val = _fix_vn_number(b2)
+
+    # Nếu chỉ trích được 1 cột số → coi là 4 cột (END có số, BEGIN trống)
+    if end_val and not begin_val:
+        pass
+    elif begin_val and not end_val:
+        end_val, begin_val = begin_val, ""
+
+    return [code, name, note, end_val, begin_val]
+
+
+
 def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = OCR_LANG_DEFAULT):
     bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
     tsv = pytesseract.image_to_data(bgr, lang=lang, config=OCR_CFG_TSV, output_type=TessOutput.DICT)
@@ -518,86 +608,78 @@ def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = O
         if row_df.empty: continue
 
         cols = [""]*5
+
         if split1 is not None and split2 is not None:
-            left_tokens, mid_tokens, end_tokens, begin_tokens = [], [], [], []
-            for _, t in row_df.sort_values("cx").iterrows():
-                cx = float(t["cx"]); s = _norm_word(str(t["text"]))
-                s = _clean_name_token(s)
-                if not s: continue
-                if cx < (split1 - 16):
-                    left_tokens.append(s)
-                elif cx < (split2 - 16):
-                    if _is_numberish(s): end_tokens.append(s)
-                    else: mid_tokens.append(s)
-                elif cx > (split2 + 16):
-                    if _is_numberish(s): begin_tokens.append(s)
-                    else: mid_tokens.append(s)
-                else:
-                    if abs(cx - split1) < abs(cx - split2): end_tokens.append(s)
-                    else: begin_tokens.append(s)
-
-            left_txt = " ".join([t for t in left_tokens + mid_tokens if t]).strip()
-            parts = [p.strip() for p in re.split(r"(?<!^)\s(?=\d{3}(?:\.\d+)?\b)", left_txt)]
-            code = ""; name = left_txt; note = ""
-            if parts:
-                if re.match(r"^\d{3}(?:\.\d+)?$", parts[0]):
-                    code = parts[0]
-                    name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
-            m = re.search(r"(?:^|\s)(\d+(?:\([a-z]\))?)\s*$", name, flags=re.I)
-            if m and (len(name) - m.start()) <= 6:
-                note = m.group(1).strip()
-                name = name[:m.start()].strip()
-
-            end_val   = _fix_vn_number(" ".join(end_tokens))
-            begin_val = _fix_vn_number(" ".join(begin_tokens))
-
-            if not end_val and not begin_val:
-                e2, b2 = _fallback_two_num_by_hist(row_df, page_w=W)
-                end_val = _fix_vn_number(e2); begin_val = _fix_vn_number(b2)
-
+            code, name, note, end_val, begin_val = _assign_cols_dynamic(row_df, split1, split2, page_w=W)
             if not _row_is_valid(code, name, end_val, begin_val):
                 continue
 
-            cols[0], cols[1], cols[2], cols[3], cols[4] = code, name, note, end_val, begin_val
-            table.append(cols)
+            # >>> ADD HERE
+            if os.environ.get("P1A_ROWDEBUG") == "1":
+                print(f"[row] code={code!r} | name={name[:60]!r} | note={note!r} | end={end_val!r} | begin={begin_val!r}")
+
+            table.append([code, name, note, end_val, begin_val])
             continue
 
-        # --- fallback KMeans ---
+        # --- fallback KMeans (linh hoạt, không ép 5 cột) ---
         row_df2 = _infer_columns(row_df, max_cols=5)
         if row_df2 is None:
-            code, name, note = "", " ".join(row_df.sort_values("cx")["text"].astype(str)), ""
+            raw_txt = " ".join(row_df.sort_values("cx")["text"].astype(str))
+            code, name, note = _extract_code_name_note(raw_txt)
             e2, b2 = _fallback_two_num_by_hist(row_df, page_w=W)
             end, begin = _fix_vn_number(e2), _fix_vn_number(b2)
-            if not _row_is_valid(code, name, end, begin): continue
+            if not end and begin:
+                end, begin = begin, ""
+            if not _row_is_valid(code, name, end, begin):
+                continue       
+            if os.environ.get("P1A_ROWDEBUG") == "1":
+                print(f"[row] code={code!r} | name={name[:60]!r} | note={note!r} | end={end!r} | begin={begin!r}")
+                   
             table.append([code, name, note, end, begin])
             continue
 
         buckets = {cid: [] for cid in sorted(row_df2["col_id"].unique())}
         for _, t in row_df2.iterrows():
             txt = _clean_name_token(_norm_word(str(t["text"])))
-            if not txt: continue
+            if not txt:
+                continue
             buckets[int(t["col_id"])].append(txt)
 
-        cols_temp = [""] * len(buckets)
-        for cid in sorted(buckets.keys()):
-            cell = " ".join(buckets[cid]).strip()
-            if cid >= (len(buckets)-2) and not _is_numberish(cell):
-                if len(cell) <= 8:   cols_temp[min(2, len(cols_temp)-1)] += (" " + cell).strip()
-                else:                cols_temp[min(1, len(cols_temp)-1)] += (" " + cell).strip()
-                cell = ""
-            cols_temp[cid] = cell
+        centers = row_df2.groupby("col_id")["cx"].mean().sort_values().index.tolist()
 
         code, name, note, end, begin = "", "", "", "", ""
-        if len(cols_temp) >= 5:
-            code, name, note = cols_temp[0], cols_temp[1], cols_temp[2]
-            end, begin = _fix_vn_number(cols_temp[-2]), _fix_vn_number(cols_temp[-1])
-        else:
-            seq = cols_temp + [""]*(5-len(cols_temp))
-            code, name, note = seq[0], seq[1], seq[2]
-            end, begin = _fix_vn_number(seq[3]), _fix_vn_number(seq[4])
+        numeric_cols = []
+        for cid in centers:
+            cell = " ".join(buckets.get(cid, [])).strip()
+            if _is_numberish(cell):
+                numeric_cols.append(cid)
 
-        if not _row_is_valid(code, name, end, begin): continue
+        if len(numeric_cols) >= 2:
+            numeric_cols_sorted = sorted(
+                numeric_cols,
+                key=lambda c: row_df2[row_df2["col_id"]==c]["cx"].mean()
+            )
+            end_cid, begin_cid = numeric_cols_sorted[-2], numeric_cols_sorted[-1]
+            end   = _fix_vn_number(" ".join(buckets.get(end_cid, [])))
+            begin = _fix_vn_number(" ".join(buckets.get(begin_cid, [])))
+            left_cids = [c for c in centers if c not in (end_cid, begin_cid)]
+            left_txt  = " ".join([" ".join(buckets.get(c, [])) for c in left_cids]).strip()
+            code, name, note = _extract_code_name_note(left_txt)
+        else:
+            if numeric_cols:
+                end_cid = numeric_cols[-1]
+                end = _fix_vn_number(" ".join(buckets.get(end_cid, [])))
+                left_cids = [c for c in centers if c != end_cid]
+            else:
+                end = ""
+                left_cids = centers
+            left_txt  = " ".join([" ".join(buckets.get(c, [])) for c in left_cids]).strip()
+            code, name, note = _extract_code_name_note(left_txt)
+
+        if not _row_is_valid(code, name, end, begin):
+            continue
         table.append([code, name, note, end, begin])
+
 
     # lọc header lần cuối
     clean = []
@@ -1100,26 +1182,43 @@ def _rows_to_amount_map(rows):
     return m_end, m_start
 
 def _eval_eq(expr, amap):
+    """
+    Đánh giá biểu thức kiểu '270 = 100 + 200'.
+    - Ưu tiên coi token là MÃ (tra theo amap); nếu không có, mặc định 0.
+    - Chỉ coi là hằng số khi là số 1–2 chữ số (ví dụ 1, 2, 10).
+    """
     import re
     expr = (expr or "").strip()
-    if "=" not in expr: 
+    if "=" not in expr:
         return True, None, None
+
     left, right = [x.strip() for x in expr.split("=", 1)]
 
-    def val(tok):
+    def as_value(tok: str) -> int:
         tok = tok.strip()
-        if tok.isdigit(): 
+        key = tok.split(".")[0]  # gom 210.1 -> 210
+        # 1) nếu có trong map, trả về số tiền
+        if key in amap:
+            return amap[key]
+        # 2) nếu thật sự là hằng số nhỏ (1–2 chữ số) thì cho là literal
+        if re.fullmatch(r"\d{1,2}", tok):
             return int(tok)
-        key = tok.split(".")[0]
-        return amap.get(key, 0)
+        # 3) còn lại coi là mã nhưng thiếu dữ liệu → 0
+        return 0
 
-    total, sign = 0, +1
-    for tok in re.findall(r"[+-]|\d+(?:\.\d+)?", right):
-        if tok in ["+","-"]:
-            sign = +1 if tok == "+" else -1
-        else:
-            total += sign * val(tok)
-    return (val(left) == total), val(left), total
+    def eval_side(side: str) -> int:
+        total, sign = 0, +1
+        for tok in re.findall(r"[+-]|\d+(?:\.\d+)?", side):
+            if tok in ["+", "-"]:
+                sign = +1 if tok == "+" else -1
+            else:
+                total += sign * as_value(tok)
+        return total
+
+    lhs = as_value(left)
+    rhs = eval_side(right)
+    return (lhs == rhs), lhs, rhs
+
 
 def run_crosschecks(rows, yaml_rules):
     formulas = ((yaml_rules.get("globals") or {}).get("cross_formulas") or [])
@@ -1204,12 +1303,23 @@ def process_page(
     meta["_table_format"] = table_format
 
     # ---- MIXED PAGE: phát hiện ROI bảng và tách TEXT / TABLE theo vùng ----
-    extra_blocks_mixed: List[Tuple[str, str]] = []
+    extra_blocks_mixed: List[Tuple[str, str]] = []    
+    
     try:
         _bgr0 = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
         rois = _find_table_rois(_bgr0)
     except Exception:
         rois = []
+
+    # Ước lượng tỷ lệ diện tích bảng trong trang (để QA/log)
+    try:
+        H, W = _bgr0.shape[:2]
+        page_area = float(H*W)
+        roi_area  = sum((x2-x1)*(y2-y1) for (x1,y1,x2,y2) in rois) if rois else 0.0
+        meta["roi_area_ratio"] = round(roi_area / max(1.0, page_area), 4)
+    except Exception:
+        meta["roi_area_ratio"] = None
+
 
     if rois and not force_table:
         # 1) OCR TEXT với vùng bảng đã che trắng
@@ -1233,13 +1343,19 @@ def process_page(
         meta.setdefault("gpt_used_roi", [])
 
         for (x1, y1, x2, y2) in rois:
-            pad_top = int((yaml_table.get("globals") or {}).get("roi_pad_top", 40))
-            pad_lr  = 4
+            # Pad rộng hơn để không cắt mất hàng tiêu đề số (VND / Số cuối năm / ngày…)
+            gl = (yaml_table.get("globals") or {})
+            pad_top = int(gl.get("roi_pad_top", 120))   # trước là 40 → tăng mặc định lên 120
+            pad_lr  = int(gl.get("roi_pad_lr", 8))      # trước là 4 → tăng mặc định lên 8
+
             y1_p = max(0, int(y1) - pad_top)
             x1_p = max(0, int(x1) - pad_lr)
             x2_p = min(pil.width,  int(x2) + pad_lr)
-            pil_roi = pil.crop((x1_p, y1_p, x2_p, int(y2)))
-            meta.setdefault("roi_padded", []).append([x1_p, y1_p, x2_p, int(y2)])
+            y2_p = min(pil.height, int(y2))             # chặn dưới cho an toàn
+
+            pil_roi = pil.crop((x1_p, y1_p, x2_p, y2_p))
+            meta.setdefault("roi_padded", []).append([x1_p, y1_p, x2_p, y2_p])
+
 
             pipe_best, met_best, route_best = "", {"score": -1e9}, "none"
             if table_engine in ("auto", "tsv"):
@@ -1255,7 +1371,10 @@ def process_page(
                 except Exception as e:
                     meta["paddle_table_error"] = str(e)
 
-            pipe_best = _prefilter_table_lines(pipe_best, yaml_table)
+            if not P1A_RAW_MODE:
+                pipe_best = _prefilter_table_lines(pipe_best, yaml_table)
+
+
 
             gpt_used_roi = False
             if (gpt_scope in ("table_only", "all")) and use_gpt and _HAS_GPT_ENHANCER and pipe_best.strip():
@@ -1350,7 +1469,8 @@ def process_page(
             best_metrics = score_table_quality(parse_pipe_to_rows(best_pipe))
             best_route = best_route if best_route != "none" else "coerce"
 
-        best_pipe = _prefilter_table_lines(best_pipe, yaml_table)
+        if not P1A_RAW_MODE:
+            best_pipe = _prefilter_table_lines(best_pipe, yaml_table)
 
         if (gpt_scope in ("table_only", "all")) and use_gpt and _HAS_GPT_ENHANCER and best_pipe.strip():
             try:
@@ -1570,29 +1690,52 @@ def build_argparser():
 
 def main():
     args = build_argparser().parse_args()
-    # nạp YAML
-    try:
-        with open(args.yaml_table, "r", encoding="utf-8") as f:
-            yaml_table = yaml.safe_load(f) or {}
-    except Exception as e:
-        print(f"⚠️ Không đọc được YAML bảng: {e}")
-        yaml_table = {}
-    try:
-        with open(args.yaml_text, "r", encoding="utf-8") as f:
-            yaml_text = yaml.safe_load(f) or {}
-    except Exception as e:
-        print(f"⚠️ Không đọc được YAML text: {e}")
-        yaml_text = {}
+
+    # --- Summary cấu hình & RAW/YAML toggle ---
+    print("========== P1A RUN CONFIG ==========")
+    print(f"[INPUT ] input-root : {os.path.abspath(args.input_root)}")
+    print(f"[OUTPUT] out-root   : {os.path.abspath(args.out_root)}")
+    print(f"[ENGINE] OCR={args.ocr_engine} | TABLE={args.table_engine} | DPI={args.dpi}")
+    print(f"[FORMAT] table-format={args.table_format} | narrator={'ON' if args.narrator=='y' else 'OFF'}")
+    print(f"[GPT   ] enabled={('NO' if args.no_gpt else 'YES')} | mode={args.gpt_table_mode} | model={args.gpt_model}")
+    print(f"[YAML ] Trạng thái: {'ĐANG TẮT (RAW MODE)' if P1A_RAW_MODE else 'ĐANG BẬT (dùng YAML)'}")
+    if not P1A_RAW_MODE:
+        print(f"[YAML ] yaml-table : {args.yaml_table}")
+        print(f"[YAML ] yaml-text  : {args.yaml_text}")
+    print("====================================")
+
+    # --- Nạp YAML theo trạng thái RAW ---
+    if P1A_RAW_MODE:
+        print("🔧 RAW_MODE=ON → Tắt YAML table/text & prefilter/mapping/validator/cross-check")
+        yaml_table, yaml_text = {}, {}
+    else:
+        try:
+            with open(args.yaml_table, "r", encoding="utf-8") as f:
+                yaml_table = yaml.safe_load(f) or {}
+        except Exception as e:
+            print(f"⚠️ Không đọc được YAML bảng: {e}")
+            yaml_table = {}
+        try:
+            with open(args.yaml_text, "r", encoding="utf-8") as f:
+                yaml_text = yaml.safe_load(f) or {}
+        except Exception as e:
+            print(f"⚠️ Không đọc được YAML text: {e}")
+            yaml_text = {}
+
+    # --- Lọc file input ---
     exts = (".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
     files = [
         p for p in glob.glob(os.path.join(args.input_root, "**", "*"), recursive=True)
         if os.path.isfile(p) and os.path.splitext(p)[1].lower() in exts
     ]
     print(f"[DEBUG] input-root = {args.input_root}")
+    print(f"[DEBUG] out-root   = {args.out_root}  (📁 tất cả file xuất sẽ nằm dưới thư mục này)")
     print(f"[DEBUG] found {len(files)} file(s)")
     if not files:
         print(f"⚠️ Không tìm thấy file hợp lệ dưới: {args.input_root}")
         return
+
+    # --- Xử lý từng file ---
     for fp in tqdm(files, desc="Processing files"):
         try:
             process_one_file(
@@ -1620,12 +1763,14 @@ def main():
                 dpi=args.dpi,
                 table_format=args.table_format,
             )
+            # Lưu ý: process_one_file đã in ra đường dẫn TXT và META:
+            #  📝 Wrote TXT: <..._text.txt>
+            #  🧾 Wrote META: <..._meta.json>
         except Exception as e:
             import traceback
             print(f"❌ Lỗi file: {fp} → {e}")
             traceback.print_exc()
+
     print("\n✅ Hoàn tất. Mỗi file input sinh ra 1 TXT (TEXT/TABLE + diễn giải dòng) + 1 meta.json.")
     print("   Bật --split-debug để có thêm file _TEXT/_TABLE; dùng --narrator n để tắt diễn giải khi QA.")
-
-if __name__ == "__main__":
-    main()
+    print(f"📌 Toàn bộ output đang nằm dưới thư mục: {os.path.abspath(args.out_root)}")
