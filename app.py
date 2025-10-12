@@ -152,6 +152,25 @@ if user_msg:
         else:
             answer = str(result) if result else "Không có phản hồi."
 
+
+        # --- Detect lỗi từ Assistants và show rõ ràng ---
+        def _is_assistant_failed(ans: str) -> bool:
+            if not isinstance(ans, str):
+                return False
+            s = ans.lower()
+            return ("assistant run error" in s) or s.startswith("error::") or ("requires_action" in s)
+
+        # ...
+        # Sau khi có `answer`
+        if _is_assistant_failed(answer):
+            st.session_state.chat_histories[current_chat].append(("bot", f"❌ {answer}"))
+            try:
+                save_chat(current_chat, st.session_state.chat_histories[current_chat])
+            except Exception:
+                pass
+            st.rerun()
+
+
         # --- Trang trí phản hồi bot ---
         decorated_msg = "🤖 Assistant API\n\n"
         if isinstance(result, dict):

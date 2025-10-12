@@ -27,9 +27,6 @@ HEADER_DIVIDER_TEXT_SIZE_REM: 0.95             # tăng: chữ banner lớn hơn
 HEADER_DIVIDER_TEXT_WEIGHT: 600                # tăng: chữ đậm hơn (400=normal, 700=bold)
 
 
-
-
-
 # ========= KÍCH THƯỚC & BỐ CỤC =========
 HEADER_TO_CHAT_GAP_REM: -2.0                   # tăng âm: kéo khối chat lên gần banner; tăng dương: đẩy xuống
 CHAT_HEIGHT_VH_EMPTY: 15                       # tăng: khung chat (khi trống) cao hơn
@@ -56,4 +53,23 @@ FOOTER_TAGLINE: "Strategic insight & business intelligence."  # nội dung hàng
 FOOTER_COPYRIGHT: "© 2025 Tom Tran Corporation. All rights reserved."  # nội dung hàng 3
 FOOTER_BRAND_TOP_MARG_REM: 0.35                 # tăng: footer cách strap xa hơn
 
+# ========= THEME =========
+THEME_BASE: "light"          # "light" hoặc "dark"
+
+# Màu nền & chữ (Light)
+BG_COLOR:   "#FFFFFF"        # nền trang
+CARD_COLOR: "#F7F7F9"        # nền thẻ/sidebar/bong bóng bot
+LINE_COLOR: "#E5E7EB"        # đường kẻ
+TEXT_COLOR: "#111827"        # màu chữ chính
+
+# Bong bóng chat
+BUBBLE_USER_BG: "#E5F1FF"    # bong bóng user (xanh nhạt)
+BUBBLE_BOT_BG:  "#F3F4F6"    # bong bóng bot (xám rất nhạt)
+
+# Ô nhập
+INPUT_BG:   "#FFFFFF"
+INPUT_TEXT: "#111827"
+
+# Prompt gợi ý
+PROMPT_TEXT: "#111827"       # (nếu bạn đang set PROMPT_TEXT trong code)
 

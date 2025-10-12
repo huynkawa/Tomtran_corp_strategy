@@ -1,25 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-src/gpt_enhancer.py — GPT enhancer cho TABLE (ưu tiên BCTC)
-
+p1a_gpt_ocr_bctc.py — GPT enhancer cho TABLE (ưu tiên BCTC, đọc ẢNH + đối chiếu PIPE)
 - Hàm public: enhance_table_with_gpt(...)
-  * Nhận text bảng đã OCR + YAML-clean (table_text_cleaned)
-  * Nhận ảnh PIL (image_pil) của trang để GPT đối chiếu (vision)
-  * Chế độ: mode="financial" | "generic" | None (auto)
-  * Trả về: string (bản bảng đã hiệu chỉnh bởi GPT) hoặc fallback bản đã clean nếu guardrail không đạt
+  * Nhận:  table_text_cleaned (PIPE var-cols do code dựng) + image_pil (ROI hoặc cả trang)
+  * GPT đọc ẢNH, đối chiếu với PIPE, sửa số liệu theo ẢNH (không bịa), giữ định dạng PIPE
+  * Chế độ: mode="financial" | "generic" | "auto"
+  * Trả về: PIPE đã hiệu chỉnh; nếu guardrail không đạt → fallback về table_text_cleaned
 
-- Guardrail chính:
-  * Yêu cầu tối thiểu số cột theo schema (financial ≥ 5 cột: CODE|NAME|NOTE|END|BEGIN)
-  * Đồng nhất số cột các dòng, không để dư thừa '|' ở cuối
-  * Không bịa số nếu ảnh không có (nêu rõ yêu cầu trong prompt)
+Guardrail:
+  - Bắt buộc có ký tự '|' (định dạng pipe)
+  - Số cột đồng nhất theo đa số; với financial: mỗi dòng phải >= 2 cột & đa số dòng >= 5 cột (CODE|NAME|NOTE|END|BEGIN)
+  - Tự chuẩn hoá số kiểu Việt (dấu chấm ngăn nghìn), giữ âm (cả dạng (123) → -123)
+  - Nếu output GPT không hợp lệ / lỗi mạng → fallback
 
-- Phụ thuộc:
-  pip install openai pillow pyyaml
-
-Lưu ý: Module này chỉ xử lý BẢNG. Phần văn bản đã được pipeline xử lý riêng.
+Phụ thuộc:
+  pip install openai pillow
 """
+
 from __future__ import annotations
-import io, base64, time, re, os
+import io, base64, time, re
 from typing import Optional, Dict, Any, List
 
 from PIL import Image
@@ -27,23 +26,53 @@ from PIL import Image
 # OpenAI SDK (>=1.0)
 try:
     from openai import OpenAI
+    _HAS_OPENAI = True
 except Exception:
-    OpenAI = None  # sẽ xử lý fallback nếu SDK chưa có
+    OpenAI = None
+    _HAS_OPENAI = False
+
 
 # =========================
 # ====== CONFIGS ==========
 # =========================
-FINANCIAL_MIN_COLS = 5     # CODE | NAME | NOTE | END | BEGIN
+FINANCIAL_MIN_COLS = 5          # CODE | NAME | NOTE | END | BEGIN (khuyến nghị)
 GENERIC_MIN_COLS   = 2
 
-DEFAULT_MODEL      = "gpt-4o-mini"
+DEFAULT_MODEL       = "gpt-4o-mini"
 DEFAULT_TEMPERATURE = 0.0
+
+# prompt system (ngắn gọn, nhấn mạnh ưu tiên ẢNH & pipe)
+SYSTEM_FINANCIAL = (
+    "Bạn là chuyên gia đọc bảng BCTC từ ảnh scan. ƯU TIÊN SỐ LIỆU TỪ ẢNH, KHÔNG BỊA. "
+    "Giữ dạng bảng PIPE (các cột ngăn bởi ' | '). Nếu có mâu thuẫn giữa ảnh và văn bản gợi ý, "
+    "hãy chỉnh theo ẢNH. Chuẩn hoá số kiểu Việt (dấu chấm ngăn nghìn). Nếu không chắc, để trống ô."
+)
+
+SYSTEM_GENERIC = (
+    "Bạn là chuyên gia đọc bảng từ ảnh scan. ƯU TIÊN SỐ LIỆU TỪ ẢNH, KHÔNG BỊA. "
+    "Giữ dạng bảng PIPE (các cột ngăn bởi ' | '). Chuẩn hoá số kiểu Việt nếu có. "
+    "Nếu không chắc, để trống ô."
+)
+
+# user yêu cầu output đúng block để dễ cắt
+USER_INSTR = (
+    "NHIỆM VỤ:\n"
+    "1) Đọc ẢNH bảng.\n"
+    "2) Đối chiếu với bảng PIPE gợi ý (từ OCR code) và SỬA SỐ LIỆU theo ẢNH.\n"
+    "3) Giữ định dạng PIPE (các cột ngăn bởi ' | '), không thêm chú thích ngoài bảng.\n"
+    "4) Nếu không chắc một ô số → để trống.\n"
+    "5) Xuất KẾT QUẢ trong block:\n"
+    "<<<PIPE>>>\n"
+    "<bảng pipe cuối cùng>\n"
+    "<<<END>>>"
+)
+
 
 # =========================
 # ====== HELPERS ==========
 # =========================
 
-def pil_to_base64_png(img: Image.Image) -> str:
+def _pil_to_base64_png(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -51,119 +80,182 @@ def pil_to_base64_png(img: Image.Image) -> str:
 
 def _retry(fn, n=2, delay=1.0):
     last = None
-    for i in range(n):
+    for _ in range(n):
         try:
             return fn()
         except Exception as e:
             last = e
             time.sleep(delay)
-    raise last
+    if last:
+        raise last
 
 
 def _looks_like_table(text: str) -> bool:
     if not text:
         return False
-    return ("|" in text) or bool(re.search(r"\b(mã\s*số|chi\s*tieu|số\s*cuối\s*năm|số\s*đầu\s*năm)\b", text, re.I))
+    if "|" in text:
+        return True
+    return bool(re.search(r"\b(mã\s*số|chi\s*t[iê]u|số\s*cuối\s*năm|số\s*đầu\s*năm)\b", text, re.I))
 
 
-def _basic_guardrail(out: str, min_cols: int) -> bool:
-    if not out:
-        return False
-    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+def _normalize_vn_amount(s: str) -> str:
+    """
+    Chuẩn hoá số kiểu Việt, giữ âm (kẻ cả (123) → -123).
+    Không cố gắng chuyển text thuần sang số.
+    """
+    t = (s or "").strip()
+    if not t:
+        return ""
+    neg = False
+    if t.startswith("(") and t.endswith(")"):
+        neg = True
+    # chỉ giữ ký tự số, dấu, khoảng trắng
+    t = re.sub(r"[^\d\.,\-\s]", "", t)
+    t = t.replace(",", ".")
+    t = re.sub(r"\s+", "", t)
+    t = re.sub(r"\.{2,}", ".", t).strip(".")
+
+    # nếu là chuỗi số dài -> nhóm 3
+    digits = re.sub(r"[^\d\-]", "", t)
+    if digits in ("", "-", "--"):
+        return s.strip()
+    sign = ""
+    if digits.startswith("-"):
+        sign, digits = "-", digits[1:]
+
+    if len(digits) <= 3:
+        out = digits
+    else:
+        parts = []
+        while digits:
+            parts.append(digits[-3:])
+            digits = digits[:-3]
+        out = ".".join(reversed(parts))
+
+    if sign or neg:
+        out = "-" + out
+    return out
+
+
+def _post_clean_pipe(out_pipe: str, financial_mode: bool) -> str:
+    """
+    - Bỏ '|' đầu/cuối, chuẩn hoá khoảng trắng mỗi cell.
+    - Chuẩn hoá số (cell có vẻ là số lớn) theo kiểu Việt.
+    """
+    lines = [ln for ln in (out_pipe or "").splitlines() if ln.strip()]
     if not lines:
+        return ""
+
+    cleaned = []
+    for idx, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        cells = [c.strip() for c in s.split("|")]
+
+        # Chuẩn hoá số cho mọi cell có vẻ là số
+        new_cells = []
+        for c in cells:
+            if re.search(r"\d{1,3}([.,]\d{3}){1,}", c) or re.fullmatch(r"[\-\(\)\d\.\, ]{3,}", c):
+                norm = _normalize_vn_amount(c)
+                new_cells.append(norm if norm else c.strip())
+            else:
+                new_cells.append(c.strip())
+        cleaned.append(" | ".join(new_cells))
+    return "\n".join(cleaned)
+
+
+def _guardrail_pipe(out_pipe: str, min_cols_required: int, financial_mode: bool) -> bool:
+    """
+    - Bắt buộc có '|' trên đa số dòng
+    - Số cột đồng nhất theo đa số (mode)
+    - Với financial_mode: đa số dòng >= 5 cột
+    """
+    if not out_pipe or "|" not in out_pipe:
         return False
-    # yêu cầu có dấu '|' và số cột tối thiểu
+
+    lines = [ln for ln in out_pipe.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+
     col_counts: List[int] = []
+    lines_with_pipe = 0
     for ln in lines:
         if "|" not in ln:
-            # cho phép header chú thích 1-2 dòng không có '|', nhưng phần lớn phải có
             continue
-        # bỏ '|' đầu/cuối nếu có
-        s = ln
-        s = s[1:] if s.startswith("|") else s
-        s = s[:-1] if s.endswith("|") else s
+        lines_with_pipe += 1
+        s = ln.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
         cols = [c.strip() for c in s.split("|")]
         col_counts.append(len(cols))
-        if len(cols) < min_cols:
-            return False
+
+    if lines_with_pipe < max(2, int(0.7 * len(lines))):
+        return False
+
     if not col_counts:
         return False
-    # phần lớn dòng phải cùng số cột
-    from statistics import mode as _mode
+
+    # đa số cột
     try:
-        majority = _mode(col_counts)
+        from statistics import mode as _mode
+        maj = _mode(col_counts)
     except Exception:
-        majority = max(set(col_counts), key=col_counts.count)
-    ok_ratio = sum(1 for c in col_counts if c == majority) / max(1, len(col_counts))
-    return ok_ratio >= 0.7
+        maj = max(set(col_counts), key=col_counts.count)
+
+    if maj < max(2, min_cols_required):
+        return False
+
+    # nếu financial: yêu cầu đa số dòng có >= 5 cột
+    if financial_mode:
+        enough5 = sum(1 for c in col_counts if c >= FINANCIAL_MIN_COLS)
+        if enough5 < int(0.6 * len(col_counts)):  # nới nhẹ vì có thể thiếu NOTE
+            return False
+
+    return True
 
 
-# =========================
-# ====== PROMPTS ==========
-# =========================
-
-SYSTEM_FINANCIAL = (
-    "Bạn là chuyên gia đọc BCTC tiếng Việt. Hãy trích xuất BẢNG tài chính chuẩn,"
-    " dạng pipe với header: CODE | NAME | NOTE | END | BEGIN.\n"
-    "- Chỉ dùng số có trong ẢNH; KHÔNG bịa số.\n"
-    "- Giữ nguyên mã số (3 chữ số hoặc dạng phân cấp 1.1, 1.2...).\n"
-    "- END = 'Số cuối năm', BEGIN = 'Số đầu năm' (nếu thiếu cột trong ảnh, để trống).\n"
-    "- Hàng tổng hoặc mục lớn vẫn là một dòng với CODE tương ứng.\n"
-    "- Không thêm cột ngoài schema, không chú thích dài dòng. Chỉ xuất bảng pipe."
-)
-
-SYSTEM_GENERIC = (
-    "Bạn là chuyên gia chuyển bảng thành văn bản dạng pipe.\n"
-    "- Chuẩn hóa bảng theo số cột nhất quán, tối thiểu 2 cột.\n"
-    "- Dùng dữ liệu từ ẢNH làm nguồn chính; so khớp với bản text gợi ý.\n"
-    "- Không thêm nhận xét hay giải thích. Chỉ xuất bảng pipe."
-)
+def _extract_pipe_block(text: str) -> str:
+    """Cắt phần giữa <<<PIPE>>> ... <<<END>>> nếu có; nếu không thì dùng toàn bộ text."""
+    if not text:
+        return ""
+    m = re.search(r"<<<PIPE>>>\s*(.*?)\s*<<<END>>>", text, flags=re.S)
+    return (m.group(1) if m else text).strip()
 
 
-def _build_messages(model: str, image_b64: str, text_hint: str, meta: Dict[str, Any], mode: str):
-    if mode == "financial":
-        system = SYSTEM_FINANCIAL
-        min_cols = FINANCIAL_MIN_COLS
-        user_intro = (
-            "ẢNH dưới đây là trang có BẢNG BCTC.\n"
-            "Bản text gợi ý (đã OCR + YAML-clean) nằm sau đây để bạn đối chiếu:```\n"
-            f"{text_hint}\n```.\n"
-            "Hãy hiệu chỉnh dựa trên ảnh nếu thấy khác. Xuất DUY NHẤT bảng pipe."
-        )
-    else:
-        system = SYSTEM_GENERIC
-        min_cols = GENERIC_MIN_COLS
-        user_intro = (
-            "ẢNH dưới đây chứa bảng.\n"
-            "Bản text gợi ý (đã OCR + YAML-clean):```\n"
-            f"{text_hint}\n```.\n"
-            "Hãy chuẩn hóa thành bảng pipe, dùng ảnh làm nguồn chính."
-        )
+def _build_messages(image_b64: str, pipe_hint: str, mode: str, meta: Dict[str, Any]) -> tuple[list, int, bool]:
+    """Trả về (messages, min_cols_required, financial_mode_flag)"""
+    financial_mode = (mode or "").lower() == "financial"
+    system = SYSTEM_FINANCIAL if financial_mode else SYSTEM_GENERIC
+    min_cols = FINANCIAL_MIN_COLS if financial_mode else GENERIC_MIN_COLS
+
+    # meta hint gọn
+    hint_meta = []
+    if meta:
+        if meta.get("company_hint"):
+            hint_meta.append(f"Company: {meta['company_hint']}")
+        if meta.get("period_hint"):
+            hint_meta.append(f"Period: {meta['period_hint']}")
+    meta_text = (" | ".join(hint_meta)) if hint_meta else ""
 
     user_blocks: List[Dict[str, Any]] = [
-        {"type": "text", "text": user_intro}
+        {"type": "text", "text": USER_INSTR},
+        {"type": "text", "text": "Đây là ẢNH bảng cần làm chuẩn:"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+        {"type": "text", "text": "Đây là bảng PIPE do code dựng (để cross-check & sửa):\n" + pipe_hint}
     ]
-    # chèn ảnh
-    user_blocks.append({
-        "type": "input_image",
-        "image_url": {
-            "url": f"data:image/png;base64,{image_b64}",
-        },
-    })
-
-    # chèn meta hint gọn
-    hint_parts = []
-    if meta:
-        if meta.get("company_hint"): hint_parts.append(f"Company: {meta['company_hint']}")
-        if meta.get("period_hint"):  hint_parts.append(f"Period: {meta['period_hint']}")
-    if hint_parts:
-        user_blocks.append({"type": "text", "text": " | ".join(hint_parts)})
+    if meta_text:
+        user_blocks.append({"type": "text", "text": meta_text})
 
     messages = [
         {"role": "system", "content": [{"type": "text", "text": system}]},
         {"role": "user",   "content": user_blocks},
     ]
-    return messages, min_cols
+    return messages, min_cols, financial_mode
 
 
 # =========================
@@ -175,66 +267,76 @@ def enhance_table_with_gpt(
     image_pil: Image.Image,
     meta: Optional[Dict[str, Any]] = None,
     *,
-    mode: Optional[str] = "financial",
+    mode: str = "financial",               # "financial" | "generic" | "auto"
     model: str = DEFAULT_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
     log_diag: bool = False,
 ) -> str:
     """
-    Trả về: string bảng pipe đã hiệu chỉnh bởi GPT (nếu hợp lệ),
-            nếu không hợp lệ → trả về table_text_cleaned (fallback)
+    GPT đọc ẢNH + PIPE → cross-check → trả ra PIPE đã sửa.
+    Nếu thất bại/không hợp lệ → trả về table_text_cleaned (fallback).
     """
-    # auto detect mode nếu None
-    eff_mode = mode
-    if eff_mode not in ("financial", "generic"):
-        eff_mode = "financial" if _looks_like_table(table_text_cleaned) else "generic"
 
-    # Chuẩn bị ảnh
+    # 1) Kiểm tra đầu vào
+    pipe_hint = (table_text_cleaned or "").strip()
     if not isinstance(image_pil, Image.Image):
-        raise ValueError("image_pil phải là PIL.Image.Image")
-    b64 = pil_to_base64_png(image_pil.convert("RGB"))
-
-    # Nếu không có SDK thì fallback
-    if OpenAI is None:
+        # Có thể gọi nhầm không đưa ảnh -> fallback
         if log_diag:
-            print("⚠️ OpenAI SDK chưa cài. Fallback về YAML-clean.")
-        return table_text_cleaned
+            print("⚠️ enhance_table_with_gpt: image_pil không phải PIL.Image → fallback PIPE gợi ý.")
+        return pipe_hint
 
+    # 2) Quyết định mode
+    eff_mode = (mode or "auto").lower()
+    if eff_mode not in ("financial", "generic"):
+        # auto: nếu có dấu hiệu code + nhiều số tiền → financial
+        has_code = bool(re.search(r"(?m)^\s*(\d{3}(?:\.\d+)?)\b", pipe_hint))
+        many_money = sum(1 for ln in pipe_hint.splitlines() if len(re.findall(r"\d{1,3}(?:[.,]\d{3}){1,}", ln)) >= 2) >= 4
+        eff_mode = "financial" if (has_code and many_money) else "generic"
+
+    # 3) Nếu chưa có SDK → fallback
+    if not _HAS_OPENAI:
+        if log_diag:
+            print("⚠️ OpenAI SDK chưa sẵn sàng → fallback PIPE gợi ý.")
+        return pipe_hint
+
+    # 4) Chuẩn bị ảnh & messages
+    b64 = _pil_to_base64_png(image_pil.convert("RGB"))
+    messages, min_cols_required, financial_mode = _build_messages(b64, pipe_hint, eff_mode, meta or {})
+
+    if log_diag:
+        print(f"[GPT CALL] model={model} temp={temperature} mode={eff_mode} "
+              f"| min_cols={min_cols_required} | financial={financial_mode}")
+        print("[PIPE HINT PREVIEW]\n" + "\n".join(pipe_hint.splitlines()[:6]) + ("\n..." if len(pipe_hint.splitlines()) > 6 else ""))
+
+    # 5) Gọi GPT (có retry)
     client = OpenAI()
 
-    # Tạo messages
-    messages, min_cols = _build_messages(model, b64, table_text_cleaned, meta or {}, eff_mode)
-
     def _call():
-        resp = client.chat.completions.create(
+        return client.chat.completions.create(
             model=model,
             temperature=temperature,
             messages=messages,
         )
-        return resp
 
     try:
         resp = _retry(_call, n=2, delay=1.0)
-        out = (resp.choices[0].message.content or "").strip()
+        raw = (resp.choices[0].message.content or "").strip()
         if log_diag:
-            print("[GPT RAW OUTPUT]\n" + out[:1200] + ("..." if len(out) > 1200 else ""))
-        if not _basic_guardrail(out, min_cols=min_cols):
+            print("[GPT RAW OUTPUT]\n" + raw[:1600] + ("..." if len(raw) > 1600 else ""))
+
+        # 6) Cắt block PIPE & hậu xử lý
+        pipe_out = _extract_pipe_block(raw)
+        pipe_out = _post_clean_pipe(pipe_out, financial_mode=financial_mode)
+
+        # 7) Guardrail
+        if not _guardrail_pipe(pipe_out, min_cols_required=min_cols_required, financial_mode=financial_mode):
             if log_diag:
-                print("⚠️ Guardrail không đạt → fallback YAML-clean.")
-            return table_text_cleaned
-        # dọn '|'
-        clean_lines = []
-        for ln in out.splitlines():
-            s = ln.strip()
-            if not s:
-                continue
-            # bỏ '|' thừa đầu/cuối + chuẩn hóa khoảng trắng
-            if s.startswith("|"): s = s[1:]
-            if s.endswith("|"):   s = s[:-1]
-            s = "|".join([c.strip() for c in s.split("|")])
-            clean_lines.append(s)
-        return "\n".join(clean_lines)
+                print("⚠️ Guardrail không đạt → fallback PIPE gợi ý.")
+            return pipe_hint
+
+        return pipe_out
+
     except Exception as e:
         if log_diag:
-            print(f"⚠️ OpenAI error → fallback YAML-clean: {e}")
-        return table_text_cleaned
+            print(f"⚠️ OpenAI error → fallback PIPE gợi ý: {e}")
+        return pipe_hint

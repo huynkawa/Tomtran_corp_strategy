@@ -24,9 +24,23 @@ from tqdm import tqdm
 from langdetect import detect
 
 import src.env  # nạp OPENAI_API_KEY từ .env.active
-from src.gpt_enhancer import enhance_table_with_gpt
+from src.gpt_enhancer import enhance_with_gpt
 
 import yaml
+
+
+# ===== GPT enhancer (an toàn có fallback) =====
+try:
+    # nếu chạy kiểu: python -m src.a1_ocr_mixed_text_table_GPT
+    from src.gpt_enhancer import enhance_with_gpt as _enhance_with_gpt
+except Exception:
+    try:
+        # nếu file đang trong cùng package
+        from .gpt_enhancer import enhance_with_gpt as _enhance_with_gpt
+    except Exception:
+        # fallback: không dùng GPT, trả nguyên văn để không bị NameError
+        def _enhance_with_gpt(text, meta=None, image=None, **kwargs):
+            return text
 
 # ========== Cấu hình mặc định ==========
 # ========== Cấu hình mặc định (linh hoạt & portable) ==========
@@ -45,8 +59,8 @@ OCR_LANG = "vie+eng"
 OCR_CFG = "--psm 6 preserve_interword_spaces=1"
 
 # Đường dẫn tuyệt đối (đảm bảo nhất cho pipeline cục bộ)
-INPUT_DIR  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a_text_only_inputs_test"
-OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\a1_ocr_mixed_text_table_GPT"
+INPUT_DIR  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_financial_reports_test"
+OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\a1_ocr_mixed_text_table_GPT_test so sanh p1a"
 YAML_RULE_PATH = r"D:\1.TLAT\3.ChatBot_project\1_Insurance_Strategy\configs\a1_text_only_rules.yaml"
 
 # ========== Tiện ích chung ==========
@@ -199,7 +213,7 @@ def process_file(file_path: Path, yaml_rules: dict):
                 if block["type"] == "table":
                     has_table = True
                     gpt_applied = True
-                    new_txt = enhance_with_gpt(block["content"], meta, None)
+                    new_txt = _enhance_with_gpt(block["content"], meta, None)
                     combined_text += "\n" + new_txt
                 else:
                     combined_text += "\n" + block["content"]
@@ -210,7 +224,7 @@ def process_file(file_path: Path, yaml_rules: dict):
                 if block["type"] == "table":
                     has_table = True
                     gpt_applied = True
-                    new_txt = enhance_with_gpt(block["content"], meta, None)
+                    new_txt = _enhance_with_gpt(block["content"], meta, None)
                     combined_text += "\n" + new_txt
                 else:
                     combined_text += "\n" + block["content"]
@@ -219,7 +233,7 @@ def process_file(file_path: Path, yaml_rules: dict):
             has_table = True
             gpt_applied = True
             txt = ocr_image_to_text(file_path)
-            combined_text += "\n" + enhance_with_gpt(txt, meta, file_path)
+            combined_text += "\n" + _enhance_with_gpt(txt, meta, file_path)
 
         elif ext in [".txt", ".csv"]:
             txt = read_txt(file_path)
@@ -235,7 +249,7 @@ def process_file(file_path: Path, yaml_rules: dict):
                 all_text = "\n\n".join(
                     [f"--- Sheet: {b['sheet']} ---\n{b['content']}" for b in excel_blocks]
                 )
-                enhanced_txt = enhance_with_gpt(all_text, meta, None)
+                enhanced_txt = _enhance_with_gpt(all_text, meta, None)
                 combined_text += "\n" + enhanced_txt
 
         else:

@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-P1A (GPT) — Hybrid Auto-Route (OpenCV+TSV → Paddle) [FULL/Hardened, VAR-COLS]
-- KHÔNG ép 5 cột; dựng bảng theo số cột thực tế (var-col)
-- Auto score/route engine cho TSV/Paddle (ưu tiên đầu ra “đầy” dòng)
-- Lọc header/caption “rác bảng”; reflow TEXT; OCR Tesseract/Paddle
-- Validator/Narrator/cross-check vẫn có sẵn, nhưng nhánh var-col không dùng
-- Xuất thêm JSONL vector store (_vector.jsonl), mỗi dòng = 1 chunk (content + metadata)
+P1A (GPT) — Hybrid Auto-Route (OpenCV+TSV → Paddle) [FULL/Hardened]
+- Auto score chất lượng bảng và route engine:
+    1) TSV/KMeans (nhẹ, nhanh)  [DEFAULT]
+    2) Nếu score xấu → Paddle PP-Structure
+    3) So sánh score, chọn bản tốt hơn (best-of-two)
+- Lọc header/caption “rác bảng” trước YAML/validator (pattern mạnh + contains)
+- Gom dòng theo Y-tol thích ứng (theo median height)
+- Neo hai cột số (END/BEGIN) theo tiêu đề ở phần đầu trang; fallback KMeans + histogram 2 số
+- Chuẩn hoá số kiểu Việt + tách “2 số dính liền”
+- Lọc token rác 1–2 ký tự, gộp mảnh NAME; kiểm tra hàng hợp lệ
+- Validator gắt và Narrator chống NaN
+- Cờ: --narrator y|n (mặc định y), --dpi (mặc định 360), default engines = TSV/Tesseract
 
 I/O:
-- Mỗi file input → 1 TXT (### [PAGE XX] [TEXT]/[TABLE]/[TABLE→ROI] ...) + 1 META.json + 1 VECTOR.jsonl
+- Mỗi file input → 1 TXT (### [PAGE XX] [TEXT]/[TABLE]/[TABLE→ROW-NARR]) + 1 META.json
 - --split-debug sinh thêm *_TEXT.txt / *_TABLE.txt
 """
 
@@ -33,7 +39,6 @@ from tqdm import tqdm
 import yaml
 import pandas as pd
 from sklearn.cluster import KMeans
-
 # ---- RAW toggle (bỏ qua YAML & prefilter) ----
 P1A_RAW_MODE = False   # True = chạy thô, False = chạy theo YAML
 
@@ -71,7 +76,7 @@ except Exception:
 
 # ====== ĐƯỜNG DẪN MẶC ĐỊNH ======
 INPUT_ROOT_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_financial_reports_test"
-OUTPUT_ROOT_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_GPT_test"
+OUTPUT_ROOT_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_GPT_test_version 2"
 YAML_TABLE_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_table.yaml"
 YAML_TEXT_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_text.yaml"
 
@@ -99,32 +104,6 @@ def clean_txt_chars(s: str) -> str:
 
 def _sha1(s: str) -> str:
     return hashlib.sha1((s or "").encode("utf-8")).hexdigest()
-
-# === Vector-store helpers ===
-def _normalize_for_vector(text: str) -> str:
-    """Rút gọn khoảng trắng, bỏ ký tự rác, giữ cấu trúc cơ bản để embed."""
-    s = (text or "")
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"[ \t]*\n[ \t]*", "\n", s)
-    drop_lines = []
-    for ln in s.splitlines():
-        low = ln.lower()
-        if re.search(r"\b(vnd|vnđ|đơn vị|don vi|as at|as of|for the year ended)\b", low):
-            continue
-        if len(ln) > 280 and not re.search(r"[0-9]", ln):
-            continue
-        drop_lines.append(ln.strip())
-    s = "\n".join(drop_lines).strip()
-    return s
-
-def _make_chunk(content: str, meta: dict) -> Optional[dict]:
-    c = (content or "").strip()
-    if not c:
-        return None
-    return {
-        "content": _normalize_for_vector(c),
-        "metadata": meta
-    }
 
 # ====== Nhận diện đơn vị/kỳ ======
 _UNIT_SCALES = {
@@ -408,15 +387,23 @@ def iter_pages(path: str, dpi: int):
 def _looks_like_table(text: str, yaml_table: dict) -> bool:
     if not text:
         return False
+    # Loại trừ rõ phần ý kiến kiểm toán / văn bản thuần
     if re.search(r"Ý kiến của Ki(ê|e)m toán|Ki(ê|e)m toán viên|Auditor'?s opinion", text, re.I):
         return False
+
     det = (yaml_table.get("globals") or {}).get("detection_tokens") or {}
     must_any = det.get("must_have_any") or []
+
     hit_tokens = any(re.search(re.escape(tok), text, re.I) for tok in must_any)
+
     code_hits   = len(CODE_LINE.findall(text))
     money_lines = sum(1 for ln in text.splitlines() if len(MONEY.findall(ln)) >= 2)
+
+    # Siết ngưỡng: yêu cầu dày đặc hơn để coi là bảng toàn trang
     dense_struct = (code_hits >= 4 and money_lines >= 4)
+
     return bool(hit_tokens or dense_struct)
+
 
 def is_table_page(txt: str, yaml_table: dict) -> bool:
     return _looks_like_table(txt, yaml_table)
@@ -424,6 +411,17 @@ def is_table_page(txt: str, yaml_table: dict) -> bool:
 # ====== TSV→Hàng/Cột (no-line) ======
 def _norm_word(w: str) -> str:
     return re.sub(r"\s+", " ", (w or "").strip())
+
+def _is_numberish(s: str) -> bool:
+    return bool(re.search(r"[\d()\-\.,]", s or ""))
+
+def _fix_vn_number(s: str) -> str:
+    if not s: return s
+    s = s.strip()
+    s = re.sub(r"[^\d(),\-\.]", "", s)
+    s = s.replace(",", "")
+    if s.startswith("(") and s.endswith(")"): s = "-" + s[1:-1]
+    return s
 
 def _tsv_dict_to_df(tsv: Dict[str, List]) -> pd.DataFrame:
     n = len(tsv.get("text", []))
@@ -454,21 +452,357 @@ def _cluster_rows(tsv_df: pd.DataFrame, y_tol: int):
     if cur: rows.append(pd.DataFrame(cur))
     return rows
 
-# ====== TABLE ROI DETECTOR (morphology) ======
+_HEADER_HINTS_END   = re.compile(r"(s[ốo]\s*c[uú]ối\s*n[ăa]m|ending\s*balance|current\s*year)", re.I)
+_HEADER_HINTS_BEGIN = re.compile(r"(s[ốo]\s*đ[ầa]u\s*n[ăa]m|beginning\s*balance|prior\s*year)", re.I)
+# Header kiểu ngày/VND (UIC…): "31/12/2024  VND" | "31/12/2023  VND"
+_HEADER_HINTS_DATE  = re.compile(r"(?:\b31|0?[1-9]|[12]\d|3[01])\s*[\/\-.]\s*(?:0?[1-9]|1[0-2])\s*[\/\-.]\s*20\d{2}", re.I)
+_HEADER_HINTS_VND   = re.compile(r"\bVND\b|\bVNĐ\b", re.I)
+
+def _anchor_numeric_splits(tsv_df: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
+    if tsv_df.empty: return None, None
+    H = tsv_df["top"].max() + tsv_df["height"].max()
+    cut = 0.35 * H
+    head = tsv_df[tsv_df["top"] < cut].copy()
+    if head.empty: return None, None
+
+    end_x = []; begin_x = []
+    for _, r in head.iterrows():
+        txt = _norm_word(str(r["text"]))
+
+        # Case 1: cụm "Số cuối năm / Số đầu năm"
+        if _HEADER_HINTS_END.search(txt):   end_x.append(r["cx"])
+        if _HEADER_HINTS_BEGIN.search(txt): begin_x.append(r["cx"])
+
+        # Case 2: header kiểu "31/12/2024  VND | 31/12/2023  VND"
+        if not end_x or not begin_x:
+            if _HEADER_HINTS_DATE.search(txt) and _HEADER_HINTS_VND.search(txt):
+                # heuristics: cột bên trái (năm hiện tại) = END, cột bên phải = BEGIN
+                # dùng cx để chia 2 cụm theo median
+                (end_x if r["cx"] < head["cx"].median() else begin_x).append(r["cx"])
+
+    # nếu sau tất cả vẫn không tìm được, bỏ neo
+    if not end_x or not begin_x:
+        return None, None
+
+    
+    sx_end   = float(np.median(end_x))
+    sx_begin = float(np.median(begin_x))
+    split1 = max(180, min(sx_end, sx_begin) - 30)
+    split2 = max(split1 + 120, (sx_end + sx_begin) / 2.0)
+    return float(split1), float(split2)
+
+_SHORT_NOISE = re.compile(r"^(?:[A-ZĐ]{1,2}|[IVX]{1,3}\.?)$")
+def _clean_name_token(tok: str) -> str:
+    s = (tok or "").strip()
+    if CODE_3.match(s): return s
+    if _SHORT_NOISE.match(s): return ""
+    return s
+
+_AMOUNT_GROUP = re.compile(r"\d{1,3}(?:\.\d{3})+")
+def _fallback_two_num_by_hist(row_df: pd.DataFrame, page_w: int) -> Tuple[str,str]:
+    cand = row_df.copy()
+    cand = cand[cand["text"].astype(str).str.contains(r"\d")]
+    cand = cand[cand["cx"] > 0.55*page_w]
+    if cand.empty: return "", ""
+    texts = " ".join(str(t) for t in cand.sort_values("cx")["text"].tolist())
+    hits = _AMOUNT_GROUP.findall(texts)
+    if len(hits) >= 2:
+        return hits[-2], hits[-1]
+    return "", ""
+
+def _infer_columns(row_df: pd.DataFrame, max_cols: int = 5):
+    X = row_df[["cx"]].to_numpy()
+    if len(X) < 3: return None
+    k = min(max_cols, max(2, len(X)))
+    km = KMeans(n_clusters=k, n_init="auto", random_state=0).fit(X)
+    row_df = row_df.copy(); row_df["col_id"] = km.labels_
+    centers = row_df.groupby("col_id")["cx"].mean().sort_values().index.tolist()
+    remap = {cid:i for i,cid in enumerate(centers)}
+    row_df["col_id"] = row_df["col_id"].map(remap)
+    return row_df
+
+def build_generic_table_from_tsv(pil: Image.Image, y_tol: int, ocr_lang: str, max_cols: int = 8) -> str:
+    """
+    Dựng bảng theo số cột thực tế từ TSV, KHÔNG ép 5 cột.
+    Xuất dạng pipe: COL1 | COL2 | ... | COLN (N có thể 3..max_cols).
+    """
+    bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    tsv = pytesseract.image_to_data(bgr, lang=ocr_lang, config=OCR_CFG_TSV, output_type=TessOutput.DICT)
+    df = _tsv_dict_to_df(tsv)
+    if df.empty:
+        return ""
+
+    X = df[["cx"]].to_numpy()
+    if len(X) < 3:
+        return ""
+
+    # chọn k theo elbow đơn giản
+    ks, inertias = [], []
+    kmax = min(max_cols, max(2, len(X)))
+    for k in range(2, kmax + 1):
+        km = KMeans(n_clusters=k, n_init="auto", random_state=0).fit(X)
+        ks.append(k); inertias.append(float(km.inertia_))
+    best_k = ks[0]
+    if len(ks) >= 2:
+        gains = [inertias[i-1] - inertias[i] for i in range(1, len(inertias))]
+        best_k = ks[gains.index(max(gains)) + 1]
+
+    km = KMeans(n_clusters=best_k, n_init="auto", random_state=0).fit(X)
+    df2 = df.copy()
+    df2["col_id"] = km.labels_
+    centers = df2.groupby("col_id")["cx"].mean().sort_values()
+    order = {cid:i for i,cid in enumerate(centers.index.tolist())}
+    df2["col_id"] = df2["col_id"].map(order)
+
+    header = " | ".join([f"COL{i+1}" for i in range(best_k)])
+    lines = [header]
+    for row_df in _cluster_rows(df2, y_tol=y_tol):
+        row_df = row_df[row_df["text"].astype(str).str.strip().astype(bool)]
+        if row_df.empty: 
+            continue
+        buckets = {i: [] for i in range(best_k)}
+        for _, t in row_df.sort_values(["cx"]).iterrows():
+            s = _norm_word(str(t["text"]))
+            if s: buckets[int(t["col_id"])].append(s)
+        row_vals = [" ".join(buckets[i]).strip() for i in range(best_k)]
+        lines.append(" | ".join(row_vals))
+    return "\n".join(lines)
+
+
+def _row_is_valid(code, name, end, begin):
+    if CODE_3.match((code or "").strip()): return True
+    if (end and begin): return True
+    return len((name or "").strip()) >= 7
+
+
+def _extract_code_name_note(left_txt: str) -> Tuple[str, str, str]:
+    """
+    Tách CODE | NAME | NOTE từ phần trái (không cột số).
+    NOTE nhận dạng dạng '5', '5.2', '10(a)' ở cuối tên.
+    """
+    s = (left_txt or "").strip()
+    code = ""; name = s; note = ""
+    m = re.match(r"^\s*(\d{3}(?:\.\d+)?)\b\s*(.*)$", s)
+    if m:
+        code = m.group(1).strip()
+        name = (m.group(2) or "").strip()
+    mn = re.search(r"(?:^|\s)(\d+(?:\.\d+)?(?:\([a-z]\))?)\s*$", name, flags=re.I)
+    if mn and (len(name) - mn.start()) <= 8:
+        note = mn.group(1).strip()
+        name = name[:mn.start()].strip()
+    return code, name, note
+
+def _assign_cols_dynamic(row_df, split1, split2, page_w) -> List[str]:
+    """
+    Map động token theo vị trí: [CODE | NAME | NOTE | END | BEGIN]
+    - Không ép 5 cột cứng; nếu không có NOTE thì để rỗng.
+    - Nếu chỉ có 1 cột số, gán vào END, BEGIN để trống.
+    """
+    left_tokens, mid_tokens, end_tokens, begin_tokens = [], [], [], []
+    for _, t in row_df.sort_values("cx").iterrows():
+        cx = float(t["cx"])
+        s  = _norm_word(str(t["text"]))
+        s  = _clean_name_token(s)
+        if not s:
+            continue
+        if cx < (split1 - 16):
+            left_tokens.append(s)
+        elif cx < (split2 - 16):
+            if _is_numberish(s): end_tokens.append(s)
+            else:                mid_tokens.append(s)
+        elif cx > (split2 + 16):
+            if _is_numberish(s): begin_tokens.append(s)
+            else:                mid_tokens.append(s)
+        else:
+            if abs(cx - split1) < abs(cx - split2):
+                end_tokens.append(s)
+            else:
+                begin_tokens.append(s)
+
+    left_txt = " ".join([t for t in left_tokens + mid_tokens if t]).strip()
+    code, name, note = _extract_code_name_note(left_txt)
+
+    end_val   = _fix_vn_number(" ".join(end_tokens))
+    begin_val = _fix_vn_number(" ".join(begin_tokens))
+
+    if not end_val and not begin_val:
+        e2, b2 = _fallback_two_num_by_hist(row_df, page_w=page_w)
+        end_val   = _fix_vn_number(e2)
+        begin_val = _fix_vn_number(b2)
+
+    # Nếu chỉ trích được 1 cột số → coi là 4 cột (END có số, BEGIN trống)
+    if end_val and not begin_val:
+        pass
+    elif begin_val and not end_val:
+        end_val, begin_val = begin_val, ""
+
+    return [code, name, note, end_val, begin_val]
+
+
+
+def assemble_financial_rows_from_pil(pil: Image.Image, y_tol: int, lang: str = OCR_LANG_DEFAULT):
+    bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    tsv = pytesseract.image_to_data(bgr, lang=lang, config=OCR_CFG_TSV, output_type=TessOutput.DICT)
+    tsv_df = _tsv_dict_to_df(tsv)
+    if tsv_df.empty:
+        return []
+
+    split1, split2 = _anchor_numeric_splits(tsv_df)
+    W = int(tsv_df["left"].max() + tsv_df["width"].max())
+
+    table = []
+    for row_df in _cluster_rows(tsv_df, y_tol=y_tol):
+        row_df = row_df[row_df["text"].astype(str).str.strip().astype(bool)]
+        if row_df.empty: continue
+
+        cols = [""]*5
+
+        if split1 is not None and split2 is not None:
+            code, name, note, end_val, begin_val = _assign_cols_dynamic(row_df, split1, split2, page_w=W)
+            if not _row_is_valid(code, name, end_val, begin_val):
+                continue
+
+            # >>> ADD HERE
+            if os.environ.get("P1A_ROWDEBUG") == "1":
+                print(f"[row] code={code!r} | name={name[:60]!r} | note={note!r} | end={end_val!r} | begin={begin_val!r}")
+
+            table.append([code, name, note, end_val, begin_val])
+            continue
+
+        # --- fallback KMeans (linh hoạt, không ép 5 cột) ---
+        row_df2 = _infer_columns(row_df, max_cols=5)
+        if row_df2 is None:
+            raw_txt = " ".join(row_df.sort_values("cx")["text"].astype(str))
+            code, name, note = _extract_code_name_note(raw_txt)
+            e2, b2 = _fallback_two_num_by_hist(row_df, page_w=W)
+            end, begin = _fix_vn_number(e2), _fix_vn_number(b2)
+            if not end and begin:
+                end, begin = begin, ""
+            if not _row_is_valid(code, name, end, begin):
+                continue       
+            if os.environ.get("P1A_ROWDEBUG") == "1":
+                print(f"[row] code={code!r} | name={name[:60]!r} | note={note!r} | end={end!r} | begin={begin!r}")
+                   
+            table.append([code, name, note, end, begin])
+            continue
+
+        buckets = {cid: [] for cid in sorted(row_df2["col_id"].unique())}
+        for _, t in row_df2.iterrows():
+            txt = _clean_name_token(_norm_word(str(t["text"])))
+            if not txt:
+                continue
+            buckets[int(t["col_id"])].append(txt)
+
+        centers = row_df2.groupby("col_id")["cx"].mean().sort_values().index.tolist()
+
+        code, name, note, end, begin = "", "", "", "", ""
+        numeric_cols = []
+        for cid in centers:
+            cell = " ".join(buckets.get(cid, [])).strip()
+            if _is_numberish(cell):
+                numeric_cols.append(cid)
+
+        if len(numeric_cols) >= 2:
+            numeric_cols_sorted = sorted(
+                numeric_cols,
+                key=lambda c: row_df2[row_df2["col_id"]==c]["cx"].mean()
+            )
+            end_cid, begin_cid = numeric_cols_sorted[-2], numeric_cols_sorted[-1]
+            end   = _fix_vn_number(" ".join(buckets.get(end_cid, [])))
+            begin = _fix_vn_number(" ".join(buckets.get(begin_cid, [])))
+            left_cids = [c for c in centers if c not in (end_cid, begin_cid)]
+            left_txt  = " ".join([" ".join(buckets.get(c, [])) for c in left_cids]).strip()
+            code, name, note = _extract_code_name_note(left_txt)
+        else:
+            if numeric_cols:
+                end_cid = numeric_cols[-1]
+                end = _fix_vn_number(" ".join(buckets.get(end_cid, [])))
+                left_cids = [c for c in centers if c != end_cid]
+            else:
+                end = ""
+                left_cids = centers
+            left_txt  = " ".join([" ".join(buckets.get(c, [])) for c in left_cids]).strip()
+            code, name, note = _extract_code_name_note(left_txt)
+
+        if not _row_is_valid(code, name, end, begin):
+            continue
+        table.append([code, name, note, end, begin])
+
+
+    # lọc header lần cuối
+    clean = []
+    for cols in table:
+        if not any(cols): continue
+        line = " ".join(cols)
+        if re.search(r"VND|Mã\s*số|Thuyết\s*minh|31/|12/", line, re.I): continue
+        clean.append(cols)
+    return clean
+
+def table_rows_to_pipe(rows: List[List[str]]) -> str:
+    lines = ["CODE | NAME | NOTE | END | BEGIN"]
+    for r in rows:
+        code,name,note,end,begin = (r + ["","","","",""])[:5]
+        lines.append(f"{code} | {name} | {note} | {end} | {begin}")
+    return "\n".join(lines)
+
+def rows_to_pipe_min(rows: List[Dict[str, str]]) -> str:
+    lines = ["CODE | NAME | NOTE | END | BEGIN"]
+    for r in rows:
+        lines.append(
+            f"{r.get('ma','')} | {r.get('chi','')} | {r.get('tm','')} | {r.get('end','')} | {r.get('start','')}"
+        )
+    return "\n".join(lines)
+
+def rows_to_json_min(rows: List[Dict[str, str]]) -> str:
+    return json.dumps(rows, ensure_ascii=False, indent=2)
+
+# === ASCII renderer (top-level, dùng chung cho MIXED/TABLE) ===
+def rows_to_ascii(rows: List[Dict[str, str]]) -> str:
+    headers = ["Mã số","Chỉ tiêu","Thuyết minh","Số cuối năm","Số đầu năm"]
+    if not rows:
+        w = {"ma": len(headers[0]), "chi": len(headers[1]), "tm": len(headers[2]),
+             "end": len(headers[3]), "start": len(headers[4])}
+    else:
+        w = {
+            "ma":   max(max(len(r.get("ma",""))   for r in rows), len(headers[0])),
+            "chi":  max(max(len(r.get("chi",""))  for r in rows), len(headers[1])),
+            "tm":   max(max(len(r.get("tm",""))   for r in rows), len(headers[2])),
+            "end":  max(max(len(r.get("end",""))  for r in rows), len(headers[3])),
+            "start":max(max(len(r.get("start",""))for r in rows), len(headers[4])),
+        }
+    pad_l = lambda s, ww: (s or "").ljust(ww)
+    pad_r = lambda s, ww: (s or "").rjust(ww)
+    line = f"+-{'-'*w['ma']}-+-{'-'*w['chi']}-+-{'-'*w['tm']}-+-{'-'*w['end']}-+-{'-'*w['start']}-+"
+    out = [line,
+           "| "+pad_l(headers[0],w['ma'])+" | "+pad_l(headers[1],w['chi'])+" | "+pad_l(headers[2],w['tm'])+
+           " | "+pad_r(headers[3],w['end'])+" | "+pad_r(headers[4],w['start'])+" |",
+           line]
+    for r in rows:
+        out.append("| "+pad_l(r.get('ma',''),w['ma'])+" | "+pad_l(r.get('chi',''),w['chi'])+" | "+
+                   pad_l(r.get('tm',''),w['tm'])+" | "+pad_r(r.get('end',''),w['end'])+" | "+
+                   pad_r(r.get('start',''),w['start'])+" |")
+    out.append(line)
+    return "\n".join(out)
+
+# ==== TABLE ROI DETECTOR (morphology) ====
 def _find_table_rois(bgr: np.ndarray) -> List[Tuple[int,int,int,int]]:
     """Trả về list bbox (x1,y1,x2,y2) các khung bảng lớn trong trang."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
     h, w = thr.shape[:2]
     kx = max(10, w // 250)
     ky = max(10, h // 250)
     kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (kx*5, 1))
     kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, ky*5))
+
     horiz = cv2.morphologyEx(thr, cv2.MORPH_OPEN, kernel_h, iterations=1)
     vert  = cv2.morphologyEx(thr, cv2.MORPH_OPEN, kernel_v, iterations=1)
     grid  = cv2.add(horiz, vert)
+
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx*3, ky*3))
     grid = cv2.dilate(grid, kernel, iterations=1)
+
     cnts,_ = cv2.findContours(grid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rois = []
     area_min = (w*h) * 0.06
@@ -489,7 +823,7 @@ def _mask_out_rois(pil: Image.Image, rois: List[Tuple[int,int,int,int]]) -> Imag
         cv2.rectangle(bgr, (x1,y1), (x2,y2), (255,255,255), thickness=-1)
     return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
-# >>> Paddle preprocess
+# >>> PATCH: preprocess & OCR số cho Paddle
 def _preprocess_for_paddle(bgr: np.ndarray) -> np.ndarray:
     h, w = bgr.shape[:2]
     pad = 6
@@ -537,11 +871,14 @@ def _ocr_crop_number(bgr: np.ndarray, box_xyxy: Tuple[int,int,int,int], lang: st
 def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
     if not _HAS_PADDLE:
         return None
+
     bgr_raw = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
     bgr = _preprocess_for_paddle(bgr_raw)
+
     layout_lang = lang if lang in ("en", "ch") else "en"
     table_engine = get_ppstructure(lang=layout_lang, use_gpu=use_gpu)
     result = table_engine(bgr)
+
     tables = []
     for item in (result or []):
         if item.get("type") != "table":
@@ -555,8 +892,10 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
                     tables.append(df)
         except Exception:
             continue
+
     if not tables:
         return None
+
     def _flatten_hdr(cols):
         out = []
         for c in cols:
@@ -565,6 +904,7 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
             else:
                 out.append(str(c))
         return [re.sub(r"\s+", " ", (x or "").strip()) for x in out]
+
     def df_to_pipe_any(df: pd.DataFrame) -> str:
         if df is None or df.empty:
             return ""
@@ -577,10 +917,12 @@ def paddle_table_to_pipe(img: Image.Image, lang="vi", use_gpu=False):
             vals = [str(x) if x is not None else "" for x in r.tolist()]
             lines.append(" | ".join(vals))
         return "\n".join(lines)
+
     parts = [df_to_pipe_any(df) for df in tables if df is not None]
     return "\n\n".join([p for p in parts if p.strip()])
 
-# ====== Prefilter (header/caption mạnh) ======
+
+# ====== PATCH 1 — Lọc header/caption mạnh ======
 _DROP_NAME_CONTAINS_DEFAULT = [
     "mã số", "ma so", "thuyết minh", "thuyet minh",
     "31/12/20", "as at", "as of", "for the year ended",
@@ -611,13 +953,38 @@ def _prefilter_table_lines(pipe_text: str, yaml_table: dict) -> str:
     out = []
     for ln in lines:
         parts = [p.strip() for p in ln.split("|")]
-        if len(parts) < 2:
+        if len(parts) < 5:
+            low = _strip_vn_accents(ln)
+            if any(re.search(pat, low, re.I) for pat in _HEADER_STRONG_PATTERNS):
+                continue
+            if _DATE_LINE.search(low) or _VND_LINE.search(low):
+                continue
+            out.append(ln); continue
+        _, name, *_ = parts
+        low = _strip_vn_accents(name)
+        if any(re.search(pat, low, re.I) for pat in _HEADER_STRONG_PATTERNS):
             continue
-        low_all = _strip_vn_accents(ln)
-        if any(re.search(pat, low_all, re.I) for pat in _HEADER_STRONG_PATTERNS):
+        if _DATE_LINE.search(low) or _VND_LINE.search(low):
             continue
-        if _DATE_LINE.search(low_all) or _VND_LINE.search(low_all):
+
+        # chỉ drop nếu KHÔNG có số ở cột END/BEGIN và KHÔNG có mã hợp lệ
+        has_amount = False
+        try:
+            end_txt   = parts[-2].strip() if len(parts) >= 4 else ""
+            begin_txt = parts[-1].strip() if len(parts) >= 5 else ""
+            has_amount = _is_amount(end_txt) or _is_amount(begin_txt)
+        except Exception:
+            has_amount = False
+
+        code_ok = False
+        try:
+            code_ok = CODE_3.match((parts[0] or "").strip()) is not None
+        except Exception:
+            code_ok = False
+
+        if (not has_amount) and (not code_ok) and any(tok in low for tok in drop_tokens):
             continue
+
         out.append(ln)
     return "\n".join(out)
 
@@ -653,7 +1020,7 @@ def coerce_pipe_table(raw_text: str) -> str:
         rows.append("|".join([code, name, note, end, begin]))
     return "\n".join(rows)
 
-# ====== Parser/Score (cho 5-cột cũ — giữ lại để đánh giá chất lượng nếu cần) ======
+# ====== Số & Scoring & Auto-route ======
 def _is_amount(x: str) -> bool:
     s = (x or "").strip()
     if not s:
@@ -661,6 +1028,82 @@ def _is_amount(x: str) -> bool:
     if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})*", s):
         return True
     return re.fullmatch(r"-?\d{4,}", s) is not None
+
+# ===== Narrator cho bảng var-cols (không ép 5 cột) =====
+_NUM_FULL = re.compile(r"-?\d{1,3}(?:\.\d{3})+|-?\d{4,}")
+# ===== Sanity-check: var-cols có thực sự là bảng? =====
+def _is_var_table(pipe_text: str, min_rows: int = 4, min_num_ratio: float = 0.30) -> bool:
+    """
+    Trả True nếu pipe N-cột có đủ số dòng & mật độ số.
+    - Ít nhất min_rows dòng dữ liệu (không tính header).
+    - Tỷ lệ dòng có >=1 số (END/BEGIN hay số bất kỳ) >= min_num_ratio.
+    - Loại trừ các trang 'Ý kiến kiểm toán', 'auditor's opinion', ...
+    """
+    if not pipe_text:
+        return False
+    lines = [ln for ln in pipe_text.splitlines() if ln.strip()]
+    if len(lines) <= 1:
+        return False
+    body = lines[1:]
+
+    low_all = " ".join(lines).lower()
+    if ("ý kiến của kiểm toán" in low_all or "kien toan vien" in low_all
+        or "auditor" in low_all and "opinion" in low_all):
+        return False
+
+    num_lines = 0
+    for ln in body:
+        parts = [p.strip() for p in ln.split("|")]
+        if any(_NUM_FULL.fullmatch(p or "") for p in parts):
+            num_lines += 1
+    rows_ok = len(body) >= min_rows
+    ratio_ok = (num_lines / max(1, len(body))) >= min_num_ratio
+    return rows_ok and ratio_ok
+
+def _parse_varcols_rows(pipe_text: str):
+    """Chuyển pipe N-cột thành list hàng {ma, chi, end, start} bằng heuristic:
+       - Lấy 2 cột số ngoài cùng bên phải làm END/BEGIN (nếu có).
+       - CODE = token đầu nếu trông như '###' hoặc '###.#'.
+       - NAME = phần còn lại gộp lại.
+    """
+    if not pipe_text: return []
+    lines = [ln for ln in pipe_text.splitlines() if ln.strip()]
+    if len(lines) <= 1: return []
+    rows = []
+    for ln in lines[1:]:
+        parts = [p.strip() for p in ln.split("|")]
+        if not any(parts):
+            continue
+        idx_num = [i for i, p in enumerate(parts) if _NUM_FULL.fullmatch(p or "")]
+        end = parts[idx_num[-2]] if len(idx_num) >= 2 else ""
+        begin = parts[idx_num[-1]] if len(idx_num) >= 1 else ""
+        left = [parts[i] for i in range(len(parts)) if i not in idx_num]
+        code = ""
+        if left and re.fullmatch(r"\d{3}(?:\.\d+)?", left[0] or ""):
+            code = left[0]
+            left = left[1:]
+        name = " ".join([t for t in left if t]).strip()
+        rows.append({"ma": code, "chi": name, "end": end, "start": begin})
+    return rows
+
+def narrator_varcols(pipe_text: str) -> str:
+    rows = _parse_varcols_rows(pipe_text)
+    out = []
+    for r in rows:
+        # bỏ dòng hoàn toàn không có mã và cũng không có số
+        if not (r.get("ma") or r.get("end") or r.get("start")):
+            continue
+        title = f"[{r['ma']}] {r['chi']}" if r.get("ma") else (r.get("chi") or "")
+        if not title.strip():
+            continue
+        end = (r.get("end") or "").strip()
+        start = (r.get("start") or "").strip()
+        out.append(f"- {title} — Cuối năm: {end or '∅'}; Đầu năm: {start or '∅'}")
+    return "\n".join(out)
+
+
+
+
 
 def parse_pipe_to_rows(pipe_text: str) -> List[Dict[str,str]]:
     rows = []
@@ -694,12 +1137,157 @@ def need_paddle_fallback(metrics: Dict[str,float]) -> bool:
         vio += 1
     return vio >= 2
 
-# ====== TABLE build pipelines (VAR-COLS) ======
+def split_glued_amounts(s: str) -> Tuple[str, str]:
+    if not s:
+        return "", ""
+    hits = re.findall(r"\d{1,3}(?:\.\d{3})+|\d{4,}", s)
+    if len(hits) >= 2:
+        left = normalize_vn_amount(hits[-2])
+        right = normalize_vn_amount(hits[-1])
+        return left, right
+    return "", ""
+
+# ====== Validator gắt & Narrator ======
+def yaml_table_clean_rows(rows: List[Dict[str,str]], yaml_rules: Dict[str,Any]) -> List[Dict[str,str]]:
+    name_map = (yaml_rules.get("name_alias") or {})
+    drop_contains = (yaml_rules.get("drop_if_name_contains") or [])
+    out=[]
+    for r in rows:
+        ma = (r.get("ma","") or "").strip()
+        chi= (r.get("chi","") or "").strip()
+        tm = (r.get("tm","") or "").strip()
+        end= normalize_vn_amount((r.get("end","") or ""))
+        start= normalize_vn_amount((r.get("start","") or ""))
+        low = _strip_vn_accents(chi)
+        if any(tok in low for tok in drop_contains): continue
+        for k,v in name_map.items():
+            if k in low: chi = v
+        out.append({"ma":ma,"chi":chi,"tm":tm,"end":end,"start":start})
+    return out
+
+def validate_and_autofix_rows(rows: List[Dict[str,str]]) -> Tuple[List[Dict[str,str]], Dict[str,Any]]:
+    issues=[]
+    for r in rows:
+        if not r["end"] and not r["start"]:
+            e2, s2 = split_glued_amounts((r.get("end","") or "") + " " + (r.get("start","") or ""))
+            if e2 or s2:
+                r["end"], r["start"] = e2, s2
+        if r["end"] and not _is_amount(r["end"]): r["end"]=""
+        if r["start"] and not _is_amount(r["start"]): r["start"]=""
+    metrics = score_table_quality(rows)
+    if metrics["missing_amount_ratio"] > 0.60:
+        issues.append({"type":"missing_amount_high","ratio":metrics["missing_amount_ratio"]})
+    if metrics["dup_amount_ratio"] > 0.15:
+        issues.append({"type":"dup_amount_high","ratio":metrics["dup_amount_ratio"]})
+    if metrics["valid_code_ratio"] < 0.50:
+        issues.append({"type":"invalid_code_ratio","ratio":metrics["valid_code_ratio"]})
+    # merge dòng chi tiếp diễn (không mã/không số)
+    fused=[]
+    for r in rows:
+        if (fused and not r["ma"] and not r["tm"] and not r["end"] and not r["start"]
+            and r["chi"] and len(r["chi"]) <= 48):
+            fused[-1]["chi"] = (fused[-1]["chi"] + " " + r["chi"]).strip()
+        else:
+            fused.append(r)
+    return fused, {"metrics":metrics, "issues":issues}
+
+# === CROSS-CHECK HELPERS ===
+def _rows_to_amount_map(rows):
+    import re
+    def to_int(s):
+        if not s: return None
+        digits = re.sub(r"[^\d-]", "", s.replace(".", ""))
+        return int(digits) if digits not in ("", "-") else None
+    m_end, m_start = {}, {}
+    for r in rows:
+        code = (r.get("ma") or "").strip()
+        if not code:
+            continue
+        key = code.split(".")[0]
+        e = to_int(r.get("end"))
+        s = to_int(r.get("start"))
+        if e is not None:   m_end[key]   = e
+        if s is not None:   m_start[key] = s
+    return m_end, m_start
+
+def _eval_eq(expr, amap):
+    """
+    Đánh giá biểu thức kiểu '270 = 100 + 200'.
+    - Ưu tiên coi token là MÃ (tra theo amap); nếu không có, mặc định 0.
+    - Chỉ coi là hằng số khi là số 1–2 chữ số (ví dụ 1, 2, 10).
+    """
+    import re
+    expr = (expr or "").strip()
+    if "=" not in expr:
+        return True, None, None
+
+    left, right = [x.strip() for x in expr.split("=", 1)]
+
+    def as_value(tok: str) -> int:
+        tok = tok.strip()
+        key = tok.split(".")[0]  # gom 210.1 -> 210
+        # 1) nếu có trong map, trả về số tiền
+        if key in amap:
+            return amap[key]
+        # 2) nếu thật sự là hằng số nhỏ (1–2 chữ số) thì cho là literal
+        if re.fullmatch(r"\d{1,2}", tok):
+            return int(tok)
+        # 3) còn lại coi là mã nhưng thiếu dữ liệu → 0
+        return 0
+
+    def eval_side(side: str) -> int:
+        total, sign = 0, +1
+        for tok in re.findall(r"[+-]|\d+(?:\.\d+)?", side):
+            if tok in ["+", "-"]:
+                sign = +1 if tok == "+" else -1
+            else:
+                total += sign * as_value(tok)
+        return total
+
+    lhs = as_value(left)
+    rhs = eval_side(right)
+    return (lhs == rhs), lhs, rhs
+
+
+def run_crosschecks(rows, yaml_rules):
+    formulas = ((yaml_rules.get("globals") or {}).get("cross_formulas") or [])
+    m_end, m_start = _rows_to_amount_map(rows)
+    results = []
+    for f in formulas:
+        ok_end,  lhs_end,  rhs_end   = _eval_eq(f.get("end",""),   m_end)   if f.get("end")   else (True, None, None)
+        ok_start,lhs_start,rhs_start = _eval_eq(f.get("start",""), m_start) if f.get("start") else (True, None, None)
+        results.append({
+            "name": f.get("name"),
+            "end":   {"ok": ok_end,   "lhs": lhs_end,   "rhs": rhs_end},
+            "start": {"ok": ok_start, "lhs": lhs_start, "rhs": rhs_start},
+        })
+    summary_ok = all((r["end"]["ok"] and r["start"]["ok"]) for r in results) if results else True
+    return summary_ok, results
+
+def narrator_rows(rows):
+    def _numstr(x):
+        s = str(x or "").strip().lower()
+        return "" if s in ("nan","none") else str(x or "")
+    out=[]
+    for r in rows:
+        chi = (r.get("chi","") or "").strip()
+        if not chi or len(chi) < 2:
+            continue
+        ma = (r.get("ma","") or "").strip()
+        tm = (r.get("tm","") or "").strip()
+        end, start = _numstr(r.get("end","")), _numstr(r.get("start",""))
+        parts = []
+        title = f"[{ma}] {chi}" if ma else chi
+        parts.append(title)
+        if end or start:
+            parts.append(f"Cuối năm: {end or '∅'}; Đầu năm: {start or '∅'}")
+        if tm:
+            parts.append(f"TM: {tm}")
+        out.append("- " + " — ".join(parts))
+    return "\n".join(out)
+
+# ====== TABLE build pipelines ======
 def build_table_tsv(pil: Image.Image, y_tol: int, ocr_lang: str) -> Tuple[str, Dict[str,float]]:
-    """
-    Dựng bảng var-cols (không ép 5 cột) bằng TSV + KMeans (chọn k theo silhouette),
-    trả về pipe "C1 | C2 | ... | Ck".
-    """
     from sklearn.metrics import silhouette_score
 
     bgr = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
@@ -765,12 +1353,11 @@ def build_table_tsv(pil: Image.Image, y_tol: int, ocr_lang: str) -> Tuple[str, D
         lines.append(" | ".join(cells))
 
     pipe = "\n".join(lines)
-    pipe = _prefilter_table_lines(pipe, {})  # lọc caption mạnh
     return pipe, {"score": 1.0}
+
 
 def build_table_paddle(pil: Image.Image, paddle_lang: str, paddle_gpu: bool) -> Tuple[str, Dict[str,float]]:
     pipe = paddle_table_to_pipe(pil, lang=paddle_lang, use_gpu=paddle_gpu) or ""
-    # vẫn để metrics placeholder (không ép 5 cột)
     rows_struct = parse_pipe_to_rows(pipe)
     metrics = score_table_quality(rows_struct)
     return pipe, metrics
@@ -788,13 +1375,13 @@ def process_page(
 ) -> Tuple[str, str, dict, List[Tuple[str,str]]]:
     """
     Trả về: (block_type, block_text, block_meta, extra_blocks)
-    - TABLE xuất theo đúng số cột thực tế (var-col). Không ép 5 cột, không narrator/validator/cross-check.
-    - TEXT vẫn clean theo YAML text nếu có.
+    - block_text: TEXT hoặc TABLE (bảng N cột thực tế, header: COL1|COL2|...|COLN)
+    - extra_blocks: có thể thêm block khác (ví dụ narr/cross nếu sau này cần)
     """
     extra_blocks: List[Tuple[str, str]] = []
     gpt_used = False
 
-    # --- OCR TEXT cho trang (để nhận diện trang/table, lấy meta cơ bản) ---
+    # OCR chọn engine (giữ nguyên logic cũ; text detection/meta vẫn cần)
     try:
         if ocr_engine == "paddle" or (ocr_engine == "auto" and _HAS_PADDLE and False):
             ocr_txt, meta_json = ocr_image_text_paddle(pil, lang=paddle_lang, use_gpu=paddle_gpu)
@@ -805,9 +1392,10 @@ def process_page(
         ocr_txt, meta_json = ocr_image_text(pil, lang=ocr_lang)
 
     meta = json.loads(meta_json) if meta_json else {}
-    meta["_table_format"] = "var-col"
+    meta["_table_format"] = table_format  # vẫn giữ trường này
+    meta["table_schema"] = "varcols"      # đánh dấu hiện đang dùng N cột linh hoạt
 
-    # --- Phát hiện ROI bảng để tách TEXT/TABLE ---
+    # Phát hiện ROI bảng để tách TEXT/TABLE (giữ nguyên)
     extra_blocks_mixed: List[Tuple[str, str]] = []
     try:
         _bgr0 = cv2.cvtColor(np.array(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
@@ -815,7 +1403,7 @@ def process_page(
     except Exception:
         rois = []
 
-    # Log diện tích bảng (tham khảo)
+    # log diện tích bảng (giữ nguyên)
     try:
         H, W = _bgr0.shape[:2]
         page_area = float(H * W)
@@ -824,64 +1412,76 @@ def process_page(
     except Exception:
         meta["roi_area_ratio"] = None
 
-    # Helper: chọn giữa TSV và Paddle theo độ “đầy” (nhiều dòng hơn) hoặc khi TSV trống
-    def choose_better_pipe(tsv_pipe: str, pad_pipe: str) -> Tuple[str, str]:
-        tsv_lines = tsv_pipe.strip().count("\n") if tsv_pipe else 0
-        pad_lines = pad_pipe.strip().count("\n") if pad_pipe else 0
-        if pad_lines > tsv_lines:
-            return pad_pipe or "", "paddle"
-        if tsv_lines > 0:
-            return tsv_pipe or "", "tsv"
-        return (pad_pipe or tsv_pipe or ""), ("paddle" if pad_pipe else "tsv")
-
-    # ====== NHÁNH: MIXED PAGE (có ROI) ======
     if rois and not force_table:
-        # 1) TEXT: che vùng bảng rồi OCR, sau đó clean theo YAML text
+        # TEXT không bảng (giữ nguyên)
         try:
             pil_text_only = _mask_out_rois(pil, rois)
             txt_only, _meta_text = ocr_image_text(pil_text_only, lang=ocr_lang)
             block_text_text = apply_yaml_clean(txt_only, yaml_text, mode="text").strip()
-            # Giảm caption/bộ khung còn sót
-            block_text_text = re.sub(r"(?im)^\s*(mã\s*số|ma\s*so|thuyết\s*minh|thuyet\s*minh|vnd|vnđ|đơn vị|don vi).*$", "", block_text_text)
-            block_text_text = re.sub(r"\n{3,}", "\n\n", block_text_text).strip()
         except Exception:
             block_text_text = ""
 
-        meta.setdefault("roi_tables", [])
-
-        # 2) Với mỗi ROI: build TABLE var-col (không ép 5 cột)
-        gl = (yaml_table.get("globals") or {}) if isinstance(yaml_table, dict) else {}
-        pad_top = int(gl.get("roi_pad_top", 120))
-        pad_lr  = int(gl.get("roi_pad_lr", 8))
+        meta.setdefault("roi_padded", [])
+        meta.setdefault("gpt_used_roi", [])
+        meta.setdefault("roi_table_metrics", [])
 
         for (x1, y1, x2, y2) in rois:
+            gl = (yaml_table.get("globals") or {})
+            pad_top = int(gl.get("roi_pad_top", 120))
+            pad_lr  = int(gl.get("roi_pad_lr", 8))
+
             y1_p = max(0, int(y1) - pad_top)
             x1_p = max(0, int(x1) - pad_lr)
             x2_p = min(pil.width,  int(x2) + pad_lr)
             y2_p = min(pil.height, int(y2))
 
             pil_roi = pil.crop((x1_p, y1_p, x2_p, y2_p))
-            meta.setdefault("roi_padded", []).append([x1_p, y1_p, x2_p, y2_p])
+            meta["roi_padded"].append([x1_p, y1_p, x2_p, y2_p])
 
-            # a) TSV var-col
-            tsv_pipe, _ = build_table_tsv(pil_roi, y_tol=y_tol, ocr_lang=ocr_lang)
-            # b) Paddle var-col
-            pad_pipe = ""
-            if _HAS_PADDLE and table_engine in ("auto", "paddle"):
+            # === BẢNG VAR-COLS (không ép 5 cột) — dùng làm block cho ROI ===
+            var_pipe = build_generic_table_from_tsv(
+                pil_roi, y_tol=y_tol, ocr_lang=ocr_lang, max_cols=12
+            ) or ""
+
+            # Bỏ ROI nếu không phải bảng "thật"
+            if not _is_var_table(var_pipe):
+                continue
+
+            # GPT (tuỳ chọn) — 'generic' để không ép schema tài chính
+            gpt_used_roi = False
+            if (gpt_scope in ("table_only", "all")) and use_gpt and _HAS_GPT_ENHANCER and var_pipe.strip():
                 try:
-                    pad_pipe = paddle_table_to_pipe(pil_roi, lang=paddle_lang, use_gpu=paddle_gpu) or ""
+                    block2 = enhance_table_with_gpt(
+                        table_text_cleaned=var_pipe,
+                        image_pil=pil_roi,
+                        meta={"company_hint": meta.get("company"), "period_hint": meta.get("period")},
+                        mode="generic",
+                        model=gpt_model, temperature=gpt_temp, log_diag=log_gpt,
+                    )
+                    if isinstance(block2, str) and block2.strip():
+                        var_pipe = block2.strip()
+                        gpt_used_roi = True
                 except Exception as e:
-                    meta.setdefault("paddle_table_error", str(e))
-            # c) chọn route tốt hơn
-            chosen_pipe, route = choose_better_pipe(tsv_pipe, pad_pipe)
-            chosen_pipe = _prefilter_table_lines(chosen_pipe, yaml_table)
-            extra_blocks_mixed.append(("TABLE", (chosen_pipe or "").strip()))
+                    meta.setdefault("gpt_errors_roi", []).append(str(e))
+            meta["gpt_used_roi"].append(bool(gpt_used_roi))
 
-            meta["roi_tables"].append({
-                "roi": [x1_p, y1_p, x2_p, y2_p],
-                "route": route,
-                "rows_est": (chosen_pipe or "").strip().count("\n")
+            # Metrics đơn giản: rows/cols (không dựa 5 cột)
+            header = (var_pipe.splitlines() or [""])[0] if var_pipe.strip() else ""
+            ncols = len([c for c in header.split("|") if c.strip()]) if header else 0
+            nrows = max(0, (len(var_pipe.splitlines()) - 1)) if var_pipe.strip() else 0
+
+            meta["roi_table_metrics"].append({
+                "roi": [x1_p, y1_p, x2_p, y2_p],  # dùng y2_p cho nhất quán
+                "route": "tsv-varcols",
+                "metrics": {"rows": nrows, "cols": ncols}
             })
+
+            # Gắn TABLE + narrator cho ROI
+            extra_blocks_mixed.append(("TABLE", var_pipe))
+            narr = narrator_varcols(var_pipe)
+            if narr.strip():
+                extra_blocks_mixed.append(("TABLE→ROW-NARR", narr))
+
 
         if extra_blocks_mixed:
             meta.update({
@@ -889,38 +1489,155 @@ def process_page(
                 "roi_count": len(rois),
                 "engine": meta.get("engine"),
             })
+            # trả TEXT làm block chính, bảng ROI là extra blocks
             return "TEXT", block_text_text, meta, extra_blocks_mixed
 
-    # ====== NHÁNH: TABLE CHO CẢ TRANG ======
+    # --- Không tách ROI: quyết định TABLE cho cả trang? (giữ nguyên phát hiện, đổi dựng) ---
     try:
         is_tbl = is_table_page(ocr_txt, yaml_table) or force_table
     except TypeError:
         is_tbl = is_table_page(ocr_txt, {}) or force_table
 
-    if is_tbl:
-        # a) TSV var-col
-        tsv_pipe, _ = build_table_tsv(pil, y_tol=y_tol, ocr_lang=ocr_lang)
-        # b) Paddle var-col
-        pad_pipe = ""
-        if _HAS_PADDLE and table_engine in ("auto", "paddle"):
+    # Fallback thử dựng bảng dù detector nói không phải — SIẾT CHẶT, CHỈ CHO BẢNG "THẬT"
+    if not is_tbl:
+        var_probe = build_generic_table_from_tsv(
+            pil, y_tol=y_tol, ocr_lang=ocr_lang, max_cols=12
+        ) or ""
+
+        # Chỉ nhận là bảng nếu đủ chuẩn (rows>=6 & mật độ dòng có số >= 0.50)
+        if _is_var_table(var_probe, min_rows=6, min_num_ratio=0.50):
+            # (tùy chọn) GPT generic
+            gpt_used = False
+            if (gpt_scope in ("table_only","all")) and use_gpt and _HAS_GPT_ENHANCER:
+                try:
+                    block2 = enhance_table_with_gpt(
+                        table_text_cleaned=var_probe,
+                        image_pil=pil,
+                        meta={"company_hint": meta.get("company"), "period_hint": meta.get("period")},
+                        mode="generic", model=gpt_model, temperature=gpt_temp, log_diag=log_gpt,
+                    )
+                    if isinstance(block2, str) and block2.strip():
+                        var_probe = block2.strip()
+                        gpt_used = True
+                except Exception as e:
+                    meta["gpt_error"] = str(e)
+
+            # luôn bổ sung TEXT mô tả đi kèm
             try:
-                pad_pipe = paddle_table_to_pipe(pil, lang=paddle_lang, use_gpu=paddle_gpu) or ""
+                block_text_text = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
+            except Exception:
+                block_text_text = (ocr_txt or "").strip()
+            if block_text_text:
+                extra_blocks.append(("TEXT", block_text_text))
+
+            narr_full = narrator_varcols(var_probe)
+            if narr_full.strip():
+                extra_blocks.append(("TABLE→ROW-NARR", narr_full))
+
+            # metrics
+            header = (var_probe.splitlines() or [""])[0]
+            ncols = len([c for c in header.split("|") if c.strip()]) if header else 0
+            nrows = max(0, len(var_probe.splitlines()) - 1)
+
+            block_text = var_probe
+            meta.update({
+                "gpt_used": gpt_used,
+                "table_route": "tsv-varcols(fallback)",
+                "table_metrics": {"rows": nrows, "cols": ncols},
+                "text_sha1": _sha1(block_text),
+                "engine": meta.get("engine"),
+                "table_format": "pipe-varcols",
+            })
+            return "TABLE", block_text, meta, extra_blocks
+
+        # KHÔNG đạt chuẩn bảng → coi là TEXT thuần
+        try:
+            block = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
+        except Exception:
+            block = (ocr_txt or "").strip()
+        meta["gpt_used"] = False
+        meta["text_sha1"] = _sha1(block)
+        return "TEXT", block, meta, []
+
+    # === is_tbl == True: Dựng bằng best-of-two (TSV var-cols vs Paddle) ===
+    if is_tbl:
+        # 1) TSV var-cols
+        var_pipe_full = build_generic_table_from_tsv(
+            pil, y_tol=y_tol, ocr_lang=ocr_lang, max_cols=12
+        ) or ""
+
+        # 2) Paddle (nếu có) để so sánh
+        paddle_pipe = ""
+        if _HAS_PADDLE:
+            try:
+                paddle_pipe = paddle_table_to_pipe(pil, lang=paddle_lang, use_gpu=paddle_gpu) or ""
             except Exception as e:
                 meta["paddle_table_error"] = str(e)
-        # c) chọn route
-        chosen_pipe, route = choose_better_pipe(tsv_pipe, pad_pipe)
-        block_text = _prefilter_table_lines((chosen_pipe or "").strip(), yaml_table)
 
+        # 3) Chọn “bảng tốt hơn” dựa trên _is_var_table (mật độ số) và số cột/hàng
+        def _tbl_score(p):
+            if not _is_var_table(p, min_rows=6, min_num_ratio=0.45):
+                return (0, 0)
+            header = (p.splitlines() or [""])[0]
+            ncols = len([c for c in header.split("|") if c.strip()]) if header else 0
+            nrows = max(0, len(p.splitlines()) - 1)
+            return (ncols, nrows)
+
+        cand = [("tsv", var_pipe_full), ("paddle", paddle_pipe)]
+        cand = [(tag, p, _tbl_score(p)) for tag,p in cand if (p or "").strip()]
+        cand.sort(key=lambda t: t[2], reverse=True)  # ưu tiên nhiều cột/hàng hơn
+        if cand:
+            route, var_pipe_full, (ncols, nrows) = cand[0]
+        else:
+            # không ứng viên đủ chuẩn → rơi về TEXT thay vì nhồi TABLE rác
+            try:
+                block = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
+            except Exception:
+                block = (ocr_txt or "").strip()
+            meta["gpt_used"] = False
+            meta["text_sha1"] = _sha1(block)
+            return "TEXT", block, meta, []
+
+        # 4) (tùy chọn) GPT generic
+        gpt_used = False
+        if (gpt_scope in ("table_only","all")) and use_gpt and _HAS_GPT_ENHANCER and var_pipe_full.strip():
+            try:
+                block2 = enhance_table_with_gpt(
+                    table_text_cleaned=var_pipe_full,
+                    image_pil=pil,
+                    meta={"company_hint": meta.get("company"), "period_hint": meta.get("period")},
+                    mode="generic", model=gpt_model, temperature=gpt_temp, log_diag=log_gpt,
+                )
+                if isinstance(block2, str) and block2.strip():
+                    var_pipe_full = block2.strip()
+                    gpt_used = True
+            except Exception as e:
+                meta["gpt_error"] = str(e)
+
+        # 5) Luôn thêm TEXT mô tả đi kèm bảng
+        try:
+            block_text_text = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
+        except Exception:
+            block_text_text = (ocr_txt or "").strip()
+        if block_text_text:
+            extra_blocks.append(("TEXT", block_text_text))
+
+        narr_full = narrator_varcols(var_pipe_full)
+        if narr_full.strip():
+            extra_blocks.append(("TABLE→ROW-NARR", narr_full))
+
+        block_text = var_pipe_full
         meta.update({
             "gpt_used": gpt_used,
-            "table_route": route,
+            "table_route": f"{route}-varcols",
+            "table_metrics": {"rows": nrows, "cols": ncols},
             "text_sha1": _sha1(block_text),
             "engine": meta.get("engine"),
-            "table_format": "var-col",
+            "table_format": "pipe-varcols",
         })
         return "TABLE", block_text, meta, extra_blocks
 
-    # ====== NHÁNH: TEXT (không có bảng) ======
+    # --- TEXT nhánh (giữ nguyên) ---
     try:
         block = apply_yaml_clean(ocr_txt, yaml_text, mode="text").strip()
     except Exception:
@@ -928,6 +1645,7 @@ def process_page(
     meta["gpt_used"] = False
     meta["text_sha1"] = _sha1(block)
     return "TEXT", block, meta, []
+
 
 # ====== MIRROR OUTPUT PATH ======
 def make_output_paths(input_root: str, output_root: str, file_path: str) -> Tuple[str,str]:
@@ -960,7 +1678,6 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
     blocks_text_only: List[str] = []
     blocks_table_only: List[str] = []
     page_metas: List[dict] = []
-    vector_chunks: List[dict] = []   # === JSONL chunks cho vector store
 
     total_pages = 0
     for page_idx, pil in iter_pages(file_path, dpi=dpi):
@@ -990,40 +1707,10 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
         else:
             blocks_table_only.append(f"{header}\n{block}\n")
 
-        # === Build vector chunks + sample preview/log ===
-        base_meta = {
-            "page": page_idx + 1,
-            "block_type": btype,
-            "source_path": os.path.abspath(file_path),
-            "engine": meta.get("engine"),
-            "route": meta.get("table_route") or meta.get("engine") or None,
-        }
-
-        if btype == "TABLE":
-            ch = _make_chunk(block, {**base_meta, "roi": None})
-            if ch:
-                vector_chunks.append(ch)
-                _tbl_lines = [ln for ln in block.splitlines() if ln.strip()]
-                if len(_tbl_lines) >= 2:
-                    print("   [TABLE] sample:", _tbl_lines[1][:20])
-            if "paddle_table_error" in meta:
-                print("   [TABLE][WARN] paddle_table_error:", meta["paddle_table_error"])
-        else:
-            ch = _make_chunk(block, {**base_meta, "roi": None})
-            if ch:
-                vector_chunks.append(ch)
-
         for (bt2, bl2) in extra_blocks:
             header2 = f"### [PAGE {page_idx+1:02d}] [{bt2}]"
             blocks.append(f"{header2}\n{bl2}\n")
             blocks_table_only.append(f"{header2}\n{bl2}\n")
-            if bt2.startswith("TABLE"):
-                ch = _make_chunk(bl2, {**base_meta, "block_type": bt2, "roi": True})
-                if ch:
-                    vector_chunks.append(ch)
-                    _tbl_lines2 = [ln for ln in bl2.splitlines() if ln.strip()]
-                    if len(_tbl_lines2) >= 2:
-                        print("   [TABLE-ROI] sample:", _tbl_lines2[1][:20])
 
         meta["page"] = page_idx + 1
         meta["block_type"] = btype
@@ -1035,6 +1722,7 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
     print(f"📝 Wrote TXT: {out_txt}")
 
     try:
+        import re
         preview = re.sub(r"\s+", " ", final_text).strip()
         print("   [OUT PREVIEW]", (preview[:100] + ("…" if len(preview) > 100 else "")))
     except Exception as e:
@@ -1054,15 +1742,6 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
         json.dump(meta_obj, f, ensure_ascii=False, indent=2)
     print(f"🧾 Wrote META: {out_meta}")
 
-    # === Write vector-store JSONL ===
-    out_vec = os.path.splitext(out_txt)[0] + "_vector.jsonl"
-    with open(out_vec, "w", encoding="utf-8") as f:
-        for ch in vector_chunks:
-            if not ch or not ch.get("content"):
-                continue
-            f.write(json.dumps(ch, ensure_ascii=False) + "\n")
-    print(f"🧠 Wrote VEC: {out_vec}  (JSONL; mỗi dòng=1 chunk)")
-
     if split_debug:
         stem = os.path.splitext(out_txt)[0]
         if blocks_text_only:
@@ -1075,7 +1754,7 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
 
 # ====== CLI ======
 def build_argparser():
-    p = argparse.ArgumentParser("P1A (GPT) — Scan gốc → TXT (TEXT/TABLE) + META + VECTOR.jsonl [Hybrid Auto-Route, Var-cols]")
+    p = argparse.ArgumentParser("P1A (GPT) — Scan gốc → TXT (TEXT/TABLE) + META (per-file) [Hybrid Auto-Route]")
     p.add_argument("--input-root", type=str, default=INPUT_ROOT_DEFAULT)
     p.add_argument("--out-root",   type=str, default=OUTPUT_ROOT_DEFAULT)
     p.add_argument("--yaml-table", type=str, default=YAML_TABLE_DEFAULT)
@@ -1104,9 +1783,9 @@ def build_argparser():
     # Narrator & DPI
     p.add_argument("--narrator", choices=["y","n"], default="y")
     p.add_argument("--dpi", type=int, default=360, help="DPI render PDF/DOCX (khuyên 360–420)")
-    # Định dạng xuất bảng (đối với 5-cột cũ; var-col vẫn là pipe header C1..Ck)
+    # Định dạng xuất bảng
     p.add_argument("--table-format", choices=["ascii","pipe","json"], default="pipe",
-                   help="Định dạng xuất bảng: ascii, pipe, json (áp dụng khi parse 5-cột; var-col giữ pipe C1..)")
+                   help="Định dạng xuất bảng: ascii (khung), pipe (CODE|NAME|NOTE|END|BEGIN), json (list rows)")
     # Phạm vi GPT
     p.add_argument("--gpt-scope", choices=["table_only","all","none"], default="table_only",
                    help="Phạm vi dùng GPT: table_only (chỉ bảng), all (cả text & bảng), none (tắt GPT)")
@@ -1187,14 +1866,18 @@ def main():
                 dpi=args.dpi,
                 table_format=args.table_format,
             )
+            # Lưu ý: process_one_file đã in ra đường dẫn TXT và META:
+            #  📝 Wrote TXT: <..._text.txt>
+            #  🧾 Wrote META: <..._meta.json>
         except Exception as e:
             import traceback
             print(f"❌ Lỗi file: {fp} → {e}")
             traceback.print_exc()
 
-    print("\n✅ Hoàn tất. Mỗi file input sinh ra: TXT + META + VECTOR.jsonl.")
+    print("\n✅ Hoàn tất. Mỗi file input sinh ra 1 TXT (TEXT/TABLE + diễn giải dòng) + 1 meta.json.")
     print("   Bật --split-debug để có thêm file _TEXT/_TABLE; dùng --narrator n để tắt diễn giải khi QA.")
     print(f"📌 Toàn bộ output đang nằm dưới thư mục: {os.path.abspath(args.out_root)}")
+
 
 if __name__ == "__main__":
     main()

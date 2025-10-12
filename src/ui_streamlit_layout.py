@@ -104,6 +104,7 @@ def render_ui(title: str = "TOMTRANCHATBOT"):
         --chat-width-mobile:{theme.CHAT_WIDTH_MOBILE_PCT}%;
     }}
     body {{ background-color: var(--bg); color: var(--text); }}
+    
 
     /* Sidebar trái */
     [data-testid="stSidebar"]{{
