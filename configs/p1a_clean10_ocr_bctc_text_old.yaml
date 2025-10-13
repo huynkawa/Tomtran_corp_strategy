@@ -18,6 +18,7 @@ globals:
       - "·"
       - "│"
       - "┃"
+      - "┃"
       - "丨"
 
     # 2) Mẫu thay thế / xoá theo regex (toàn cục)
@@ -32,8 +33,7 @@ globals:
         to: ""
       - from: "(?mi)^.*\\b(BCTC|Báo\\s*cáo\\s*tài\\s*chính|Bao\\s*cao\\s*tai\\s*chinh)\\b.*$\\n?"
         to: ""
-      # Chỉ xoá dòng có 'Đơn vị...' kèm VND (giảm xoá nhầm nội dung)
-      - from: "(?mi)^.*\\b(Đơn\\s* vị(\\s*tính)?|Don\\s*vi(\\s*tinh)?)\\b.*VND.*$\\n?"
+      - from: "(?mi)^.*\\b(Đơn\\s* vị(\\s*tính)?|Don\\s*vi(\\s*tinh)?)\\b.*$\\n?"
         to: ""
       - from: "(?mi)^.*\\b(Ban\\s*hành\\s*theo|Ban\\s*hanh\\s*theo)\\b.*$\\n?"
         to: ""
@@ -49,6 +49,7 @@ globals:
         to: ""
 
       # --- nối từ bị ngắt dòng bằng dấu gạch ngang (hyphenation) ---
+      #     ví dụ: "kế to-\nán" -> "kế toán"
       - from: "(?<!\\d)-\\s*\\n\\s*(?=[A-Za-zÀ-ỹĐđ])"
         to: ""
       # --- xoá khoảng trắng thừa trước ngắt dòng ---
@@ -62,7 +63,7 @@ globals:
         to: ""
 
       # --- dọn các cặp ký tự OCR lẫn lộn hay gặp ---
-      - from: "I\\s*\\|\\s*I"   # I | I  → II
+      - from: "I\\s*\\|\\s*I"   # I | I
         to: "II"
       - from: "\\bll\\b"
         to: "II"

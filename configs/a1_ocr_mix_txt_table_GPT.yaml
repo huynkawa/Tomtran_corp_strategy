@@ -1,144 +1,214 @@
 # ===============================================================
-# rules_table_universal.yaml
-# Áp dụng chung cho tất cả các bảng (financial, UW, retention, KPI, BSC, client list, delegation…)
-# ---------------------------------------------------------------
-# Mục tiêu:
-# - Nhận diện và chuẩn hóa mọi dạng bảng (Excel, PDF, DOCX, image)
-# - Giữ nguyên giá trị và cấu trúc
-# - Giúp GPT chỉ chỉnh format/mô tả, không suy diễn nội dung
-# - Tương thích vector store và các bước clean sau này
+# rules_table_universal.yaml  (REVISED)
+# Áp dụng chung cho mọi bảng (financial, UW, retention, KPI, BSC, client list…)
+# Tối ưu cho runner A2 (gắn YAML -> GPT, TSV, validator, chunking)
 # ===============================================================
 
 meta:
-  version: 1.1
+  version: 1.2
   type: "universal_table"
   description: >
-    YAML dùng chung cho tất cả các bảng trong lĩnh vực bảo hiểm: bảng tài chính, guideline kỹ thuật,
-    bảng hạn mức UW, retention, KPI, Balanced Scorecard, danh sách khách hàng, v.v.
-    Không cho phép GPT suy luận hoặc dịch thuật sai ngữ cảnh.
+    Quy tắc chuẩn hoá bảng cho nhiều lớp tài liệu bảo hiểm (financial, UW, retention,
+    KPI/BSC, client list…). Mục tiêu: giữ nguyên giá trị & cấu trúc, chống bịa số, xuất TSV
+    "vector-ready", dễ truy vấn theo cột.
 
 # ---------------------------------------------------------------
-# 1️⃣ Nhận diện loại bảng (để phân nhánh logic xử lý)
+# 0) Chính sách an toàn cho GPT (được code A2 đọc & áp)
+# ---------------------------------------------------------------
+policy:
+  no_hallucination: true          # cấm suy diễn/bịa số/nội dung ngoài văn bản
+  keep_units: true                # không tự đổi đơn vị
+  no_translation: true            # không dịch thuật ngữ chuyên ngành
+  allow_reformat_only: true       # chỉ tái định dạng, làm sạch, chuẩn cột
+  forbid_summary: true            # không tóm tắt, không diễn giải
+
+# ---------------------------------------------------------------
+# 1) Phân lớp tài liệu để route schema/chuẩn hoá
 # ---------------------------------------------------------------
 doc_classification:
-  financial_keywords: ["Balance Sheet", "Statement", "Tài sản", "Vốn chủ sở hữu", "Doanh thu", "mã 110", "Số cuối năm"]
-  technical_keywords: ["Retention", "UW", "Underwriting", "Treaty", "Authority", "Delegated", "Limit", "Risk", "Engineering", "Property"]
-  management_keywords: ["Objective", "Indicator", "Goal", "Action", "Balanced Scorecard", "BSC", "KPI"]
-  client_keywords: ["Customer", "Client", "Company name", "Parent company", "List", "Insured", "Account"]
-  healthcare_keywords: ["Health", "CPH", "MDI", "PAI", "Medical"]
+  financial_keywords:
+    - "Balance Sheet" - "Statement" - "Tài sản" - "Vốn chủ sở hữu" - "Doanh thu" - "mã 110" - "Số cuối năm"
+  uw_keywords:
+    - "Retention" - "UNR" - "Underwriting" - "Treaty" - "Authority" - "Delegated" - "Limit" - "Risk" - "Engineering" - "Property"
+  kpi_keywords:
+    - "Objective" - "Indicator" - "Goal" - "Action" - "Balanced Scorecard" - "BSC" - "KPI"
+  client_keywords:
+    - "Customer" - "Client" - "Company name" - "Parent company" - "Insured" - "Account"
 
 # ---------------------------------------------------------------
-# 2️⃣ Chuẩn hóa tiêu đề cột (tự động map các cột phổ biến)
+# 2) Prompt cho GPT — đúng định dạng runner A2
 # ---------------------------------------------------------------
-columns_standardization:
-  - match: ["Class", "Loại hình", "Line of Business", "LOB"]
-    rename: "Business Line"
-  - match: ["Parent", "Parent company"]
-    rename: "Parent Company"
-  - match: ["Customer name", "Client name", "Tên khách hàng", "Insured name"]
-    rename: "Customer / Insured Name"
-  - match: ["Ultimate Net Retention", "UNR", "Retention"]
-    rename: "Retention (UNR)"
-  - match: ["Max. Net Retention", "Maximum Retention"]
-    rename: "Maximum Retention"
-  - match: ["XOL Treaty protection", "Protection type"]
-    rename: "Treaty / Protection"
-  - match: ["Objective", "Mục tiêu"]
-    rename: "Objective / Goal"
-  - match: ["Indicator", "KPI", "Indicator Name"]
-    rename: "Indicator"
-  - match: ["Goal", "Target", "Purpose"]
-    rename: "Goal / Target"
-  - match: ["Action", "Action plan", "Biện pháp"]
-    rename: "Action / Measure"
-  - match: ["Finance", "Financial"]
-    rename: "Finance"
-  - match: ["Internal process", "Process"]
-    rename: "Internal Process"
-  - match: ["Learning", "Growth", "Development"]
-    rename: "Learning & Growth"
-  - match: ["Discount", "Tỷ lệ chiết khấu"]
-    rename: "Discount (%)"
-  - match: ["Loss Ratio", "L/R"]
-    rename: "Loss Ratio (%)"
-  - match: ["Limit", "Limit of Liability", "Authority Limit"]
-    rename: "Limit / Authority"
-  - match: ["Position", "Person", "Name of person/position", "Title"]
-    rename: "Person / Position"
-  - match: ["Unit", "Đơn vị"]
-    rename: "Unit"
-  - match: ["Value", "Amount", "Số tiền"]
-    rename: "Value / Amount"
+gpt_prompt:
+  common: |
+    • Không bịa đặt hay suy diễn nội dung/số liệu.
+    • Không tự đổi đơn vị, không dịch thuật ngữ chuyên ngành.
+    • Chỉ tái định dạng (format), làm sạch văn bản và chuẩn hoá cột theo yêu cầu.
+  table_only: |
+    • ĐẦU RA PHẢI LÀ TSV (mỗi ô cách nhau bằng ký tự tab \t, mỗi hàng 1 dòng).
+    • Không thêm mô tả, không chú thích, không tiêu đề phụ ngoài cột.
+    • Nếu có header nhiều dòng, hãy hợp nhất thành 1 hàng header rõ ràng.
+    • Chuẩn hoá tên cột theo schema áp dụng (nếu ánh xạ được), giữ nguyên giá trị ô.
+    • Chuẩn hóa số theo “numeric_format”; không đổi đơn vị.
+  paragraph_with_headings: |
+    • Chỉ chuẩn hoá/khôi phục tiêu đề/heading nếu bị OCR sai; không diễn giải nội dung.
+    • Giữ nguyên ngôn ngữ, không dịch thuật ngữ.
 
 # ---------------------------------------------------------------
-# 3️⃣ Làm sạch dữ liệu văn bản / loại bỏ rác
+# 3) Chuẩn hoá số liệu và đơn vị
+# ---------------------------------------------------------------
+numeric_format:
+  decimal_separator: "."
+  thousand_separator: ","
+  detect_currency: ["USD", "VND", "JPY", "EUR"]
+  preserve_negatives: true
+  preserve_parentheses: true     # (1,234) -> âm nếu cần, nhưng không tự quy đổi
+  unit_aliases:
+    # ánh xạ cách viết phổ biến
+    - pattern: "(?i)usd"
+      replace: "USD"
+    - pattern: "(?i)vnd|đ|đồng"
+      replace: "VND"
+    - pattern: "(?i)eur"
+      replace: "EUR"
+    - pattern: "(?i)jpy|¥"
+      replace: "JPY"
+  text_units_vn:
+    - "đồng" - "nghìn đồng" - "triệu đồng" - "tỷ đồng"
+  forbid_unit_conversion: true    # cấm chuyển nghìn↔triệu↔tỷ, chỉ giữ nguyên
+
+# ---------------------------------------------------------------
+# 4) Làm sạch văn bản (áp trước khi đẩy GPT)
 # ---------------------------------------------------------------
 text_cleanup:
   remove_patterns:
     - "^\s*$"                    # dòng trống
     - "Page\s+\d+"               # số trang
-    - "^\W+$"                    # ký tự đặc biệt
-    - "^\d{4}-\d{2}-\d{2}$"      # ngày tháng lẻ
+    - "^\W+$"                    # chỉ ký tự đặc biệt
   strip_characters:
-    - "\u00A0"                   # non-breaking space
+    - "\u00A0"                   # NBSP
     - "\t"
     - "\r"
   normalize_spaces: true
   collapse_double_newlines: true
-  merge_multiline_cells: true    # ghép ô xuống dòng trong Excel
+  merge_multiline_cells: true    # với Excel/TSV có ô xuống dòng
 
 # ---------------------------------------------------------------
-# 4️⃣ Hướng dẫn GPT xử lý bảng
+# 5) Chuẩn hoá cột theo LỚP BẢNG (schema + alias + order)
 # ---------------------------------------------------------------
-gpt_prompt:
-  mode: "table_only"
-  instruction: >
-    Chỉ chỉnh sửa hoặc mô tả lại bảng theo dạng văn bản ngắn, giữ nguyên cấu trúc hàng-cột và giá trị.
-    KHÔNG được suy diễn hoặc thêm nhận xét tài chính. 
-    Nếu bảng là kỹ thuật (Retention, Authority, UW Manual), hãy giữ nguyên thuật ngữ và đơn vị.
-    Nếu bảng là KPI hoặc BSC, chỉ mô tả quan hệ giữa các cột Objective – Indicator – Action.
-    Nếu bảng là danh sách khách hàng, chỉ liệt kê tên và nhóm.
-    Nếu bảng là tài chính, giữ nguyên số và đơn vị, không dịch đơn vị tiền.
-  example_behavior:
-    - "Đúng: 'Bảng liệt kê các hạn mức Authority theo từng vị trí, giá trị USD giữ nguyên.'"
-    - "Sai: 'Công ty có khả năng tài chính mạnh...' → không được phép."
+columns_standardization:
+
+  # ==== 5.1 Financial (BCTC) ====
+  - class: "financial"
+    header_alias:
+      "Code|Mã|Mã số": "CODE"
+      "Item|Chỉ tiêu|Tên chỉ tiêu|Name": "NAME"
+      "Note|Ghi chú": "NOTE"
+      "Ending|Số cuối năm|Cuối kỳ|End": "END"
+      "Beginning|Số đầu năm|Đầu kỳ|Begin": "BEGIN"
+      "Unit|Đơn vị|Currency": "UNIT"
+    required: ["CODE", "NAME", "END", "BEGIN"]
+    order: ["CODE","NAME","NOTE","END","BEGIN","UNIT"]
+    numeric_columns: ["END","BEGIN"]
+    unit_column: "UNIT"
+
+  # ==== 5.2 UW / Retention / Authority ====
+  - class: "uw"
+    header_alias:
+      "Customer|Client|Insured": "CUSTOMER"
+      "LOB|Line of Business|Class|Loại hình": "LOB"
+      "UNR|Ultimate Net Retention|Retention": "UNR"
+      "Max Retention|Maximum Retention": "MAX_RET"
+      "Treaty|Protection|XOL": "TREATY"
+      "Limit|Authority|Limit of Liability": "LIMIT"
+      "Unit|Đơn vị|Currency": "UNIT"
+    required: ["CUSTOMER","LOB"]
+    order: ["CUSTOMER","LOB","UNR","MAX_RET","TREATY","LIMIT","UNIT"]
+    numeric_columns: ["UNR","MAX_RET","LIMIT"]
+    unit_column: "UNIT"
+
+  # ==== 5.3 KPI / BSC ====
+  - class: "kpi"
+    header_alias:
+      "Objective|Mục tiêu|Goal|Purpose": "OBJECTIVE"
+      "Indicator|KPI|Indicator Name": "INDICATOR"
+      "Target|Goal": "TARGET"
+      "Action|Action plan|Biện pháp": "ACTION"
+      "Owner|PIC|Person|Position": "OWNER"
+      "Unit|Đơn vị": "UNIT"
+    required: ["OBJECTIVE","INDICATOR"]
+    order: ["OBJECTIVE","INDICATOR","TARGET","ACTION","OWNER","UNIT"]
+
+  # ==== 5.4 Client / Account List ====
+  - class: "client"
+    header_alias:
+      "Customer name|Client name|Insured name|Tên khách hàng": "CUSTOMER"
+      "Parent|Parent company": "PARENT"
+      "Group|Nhóm": "GROUP"
+      "Business Line|LOB|Class": "LOB"
+      "Contact|Email|Phone": "CONTACT"
+    required: ["CUSTOMER"]
+    order: ["CUSTOMER","PARENT","GROUP","LOB","CONTACT"]
 
 # ---------------------------------------------------------------
-# 5️⃣ Chuẩn hóa số liệu và đơn vị
+# 6) Loại bỏ rác bảng trước/giữa/sau khi GPT chuẩn hoá TSV
 # ---------------------------------------------------------------
-numeric_format:
-  decimal_separator: "."
-  thousand_separator: ","
-  detect_currency: ["USD", "VND", "JPY", "EUR", "mio", "000"]
-  preserve_negatives: true
-  preserve_parentheses: true
-  unify_units:
-    - pattern: "(?i)mio"
-      replace: "million"
-    - pattern: "(?i)000"
-      replace: "thousand"
+table_clean_rules:
+  drop_rows_matching:
+    - "^\s*(Table|Hình|Figure)\b.*$"
+    - "^\s*(Total|Tổng cộng)\s*$"              # (tuỳ, có thể giữ nếu là số)
+  drop_if_all_empty: true
+  trim_cells: true
+  drop_single_char_tokens: false               # để mặc định false, tránh làm mất mã code
 
 # ---------------------------------------------------------------
-# 6️⃣ Hỗ trợ đọc nhiều sheet (Excel)
+# 7) Validator nhẹ sau khi GPT trả TSV
 # ---------------------------------------------------------------
-excel_reader:
-  include_all_sheets: true
-  sheet_prefix: true
-  merge_vertical_headers: true
-  skip_empty_sheets: true
+validators:
+  min_columns: 2
+  max_columns: 20
+  # cột bắt buộc theo class (áp dụng sau khi map alias)
+  required_by_class:
+    financial: ["CODE","NAME","END","BEGIN"]
+    uw: ["CUSTOMER","LOB"]
+    kpi: ["OBJECTIVE","INDICATOR"]
+    client: ["CUSTOMER"]
+  numeric_by_class:
+    financial: ["END","BEGIN"]
+    uw: ["UNR","MAX_RET","LIMIT"]
+  unit_allowlist:
+    - "USD" - "VND" - "EUR" - "JPY"
+  fail_on_empty_header: false   # nếu true: fail nếu không xác định được header
 
 # ---------------------------------------------------------------
-# 7️⃣ Xuất dữ liệu ra vector store
+# 8) Chunking (bảng dài)
+# ---------------------------------------------------------------
+chunking:
+  enabled: true
+  max_rows_per_chunk: 80
+  overlap_rows: 0
+
+# ---------------------------------------------------------------
+# 9) Xuất dữ liệu cho vector store
 # ---------------------------------------------------------------
 output_format:
-  text_mode: "paragraph"
-  table_mode: "tsv"
+  table_mode: "tsv"                            # runner đã ép TSV, nhắc lại ở đây
   include_metadata: true
   metadata_fields:
     - source_path
     - page
-    - sheet_name
+    - sheet
     - language
     - doc_type
-    - table_detected
     - company
+    - appendix_id
+    - section
+    - class                                # financial/uw/kpi/client
+    - rules_version
+
+# ---------------------------------------------------------------
+# 10) (Tuỳ chọn) Heading patterns để khôi phục tiêu đề bị thiếu
+#     Runner A2 dùng ở bước apply_heading_autofix() cho TEXT
+# ---------------------------------------------------------------
+heading_patterns:
+  "SECTION D: REFERRAL RISKS": "(?i)\\breferral\\s+risks?\\b"
+  "APPENDIX I_CFE TARIFF AND TABLE OF CATEGORY": "(?i)\\bCFE\\s+tariff\\b|\\bcompulsory\\s+fire\\b"

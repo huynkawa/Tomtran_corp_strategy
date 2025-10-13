@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-src/gpt_enhancer.py — GPT enhancer cho TABLE & TEXT
+src/gpt_enhancer.py — GPT enhancer cho TABLE & TEXT (generic-first, TSV)
 - TABLE:
-    + mode="financial": BCTC (ép format CODE | NAME | NOTE | END | BEGIN)
-    + mode="generic"  : bảng thường (cột linh hoạt, ngăn bằng '|')
-    + Ưu tiên ẢNH nếu có; fallback về bản YAML-clean nếu GPT lỗi/format sai
-    + Guardrail: kiểm định dạng '|', số cột tối thiểu, sanity check nhẹ cho BCTC
+    + Mặc định: generic (mọi loại bảng chiến lược/Excel, không ép schema tài chính)
+    + Financial chỉ khi meta.class == "financial" hoặc mode="financial"
+    + Xuất TSV (tab) chuẩn; nếu model trả '|', sẽ chuyển về TAB
+    + Guardrail nhẹ: min_cols, định dạng dòng; sanity-check tài chính chỉ khi financial_strict=True
 - TEXT:
     + Clean nhẹ văn bản thường (không đổi sang bảng/markdown)
 - Backward-compat:
-    + Cung cấp hàm enhance_with_gpt(...) để giữ tương thích ngược với code cũ
+    + Giữ enhance_with_gpt(...) để tương thích code runner cũ
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 
-# OpenAI client (phiên bản v1+)
+# OpenAI client (v1+)
 try:
     from openai import OpenAI
     _OPENAI_OK = True
@@ -31,7 +31,7 @@ except Exception:
     _OPENAI_OK = False
 
 
-# ---------- Heuristic nhận dạng bảng BCTC ----------
+# ---------- Heuristic nhận dạng domain ----------
 _FIN_HINTS = [
     r"\bmã\s*số\b", r"\bchỉ\s*t[ií]êu\b",
     r"\bsố\s*cuối\s*năm\b", r"\bsố\s*đầu\s*năm\b",
@@ -40,58 +40,72 @@ _FIN_HINTS = [
 ]
 _FIN_CODE_PAT = r"\b\d{2,3}(?:\.\d+)?\b"  # 100, 131, 131.1, 329.2,...
 
-def detect_table_domain(clean_text: str) -> str:
-    t = (clean_text or "").lower()
-    if any(re.search(p, t, re.I) for p in _FIN_HINTS) and re.search(_FIN_CODE_PAT, t):
+_STRATEGY_HINTS = [
+    r"\bkpi\b", r"\bbsc\b", r"\bobjective\b", r"\bindicator\b",
+    r"\btarget\b", r"\baction\b", r"\bretention\b", r"\bauthority\b",
+    r"\bmetric\b", r"\bscorecard\b", r"\bclient\b", r"\bcustomer\b",
+    r"\bunit\b", r"\bgoal\b", r"\bmeasure\b", r"\buw\b", r"\bunderr?writing\b"
+]
+
+def _looks_financial(text: str) -> bool:
+    t = (text or "").lower()
+    return any(re.search(p, t, re.I) for p in _FIN_HINTS) and re.search(_FIN_CODE_PAT, t)
+
+def detect_table_domain(clean_text: str, meta: Optional[dict]=None) -> str:
+    """
+    Mặc định: 'generic'. Chỉ trả 'financial' khi meta.class == 'financial'
+    hoặc văn bản có tín hiệu tài chính MẠNH.
+    """
+    if meta and str(meta.get("class", "")).lower() == "financial":
         return "financial"
+    if _looks_financial(clean_text):
+        return "financial"
+    # Bất kỳ tín hiệu chiến lược nào cũng ưu tiên generic (không ép schema)
+    t = (clean_text or "").lower()
+    if any(re.search(p, t, re.I) for p in _STRATEGY_HINTS):
+        return "generic"
     return "generic"
 
 
 # ---------- Schema & Prompt builder ----------
-def _schema_for_mode(mode: str, as_json: bool = False) -> Dict[str, Any]:
-    mode = (mode or "financial").lower()
+def _schema_for_mode(mode: str, as_json: bool = False, sep: str = "\t") -> Dict[str, Any]:
+    """
+    sep: ký tự phân cột yêu cầu trong output (mặc định TAB).
+    """
+    mode = (mode or "generic").lower()
     if mode == "financial":
         if as_json:
             sys = (
-                "Bạn là chuyên gia kiểm định bảng báo cáo tài chính (phi nhân thọ, VN). "
-                "Đọc KỸ bảng trong ẢNH và đối chiếu với văn bản OCR đã làm sạch. "
-                "Nếu mâu thuẫn, TIN ẢNH HƠN. KHÔNG BỊA. "
-                "TRẢ VỀ JSON (list các hàng), mỗi hàng là object có khóa: "
-                "CODE, NAME, NOTE, END, BEGIN. NOTE có thể rỗng. "
-                "END/BEGIN dùng định dạng số kiểu VN dưới dạng chuỗi (ví dụ '1.234.567'). "
-                "KHÔNG in thêm giải thích/markdown."
+                "Bạn là chuyên gia trích bảng TÀI CHÍNH từ ảnh/văn bản OCR.\n"
+                "TRẢ VỀ JSON: danh sách các hàng; mỗi hàng là object có khóa: "
+                "CODE, NAME, NOTE (có thể rỗng), END, BEGIN.\n"
+                "Không thêm giải thích/markdown."
             )
         else:
+            sep_name = "TAB" if sep == "\t" else sep
             sys = (
-                "Bạn là chuyên gia kiểm định bảng báo cáo tài chính (phi nhân thọ, VN). "
-                "Đọc KỸ bảng trong ẢNH và đối chiếu với văn bản OCR đã làm sạch. "
-                "Nếu mâu thuẫn, TIN ẢNH HƠN. KHÔNG BỊA. "
-                "ĐẦU RA: TEXT THUẦN; mỗi dòng 1 hàng; cột theo thứ tự: "
-                "CODE | NAME | NOTE | END | BEGIN. "
-                "Nếu không có NOTE, để trống giữa hai dấu '|'. "
-                "END/BEGIN định dạng số kiểu VN (1.234.567). "
+                "Bạn là chuyên gia trích bảng TÀI CHÍNH từ ảnh/văn bản OCR.\n"
+                f"ĐẦU RA: TEXT THUẦN; mỗi dòng 1 hàng; cột ngăn bằng '{sep_name}'.\n"
+                "Thứ tự cột: CODE, NAME, NOTE (có thể rỗng), END, BEGIN.\n"
                 "Không in tiêu đề/markdown/giải thích."
             )
-        return {"name": "financial", "min_cols": 4, "max_cols": 5, "sys": sys}
+        return {"name": "financial", "min_cols": 4, "max_cols": 5, "sys": sys, "sep": sep}
     else:
         if as_json:
             sys = (
-                "Bạn là chuyên gia trích bảng trong ẢNH thành JSON. "
-                "Đọc KỸ ẢNH và đối chiếu với văn bản OCR đã làm sạch. "
-                "Nếu mâu thuẫn, TIN ẢNH HƠN. KHÔNG BỊA. "
-                "TRẢ VỀ JSON: danh sách các hàng; mỗi hàng là list các cột theo thứ tự trái→phải. "
-                "Không in thêm giải thích/markdown."
+                "Bạn là chuyên gia trích bảng từ ảnh/văn bản OCR (không bắt buộc tài chính).\n"
+                "TRẢ VỀ JSON: danh sách các hàng; mỗi hàng là list các cột trái→phải.\n"
+                "Không thêm giải thích/markdown."
             )
         else:
+            sep_name = "TAB" if sep == "\t" else sep
             sys = (
-                "Bạn là chuyên gia chuyển bảng trong ẢNH thành TEXT có cột. "
-                "Đọc KỸ ẢNH và đối chiếu với văn bản OCR đã làm sạch. "
-                "Nếu mâu thuẫn, TIN ẢNH HƠN. KHÔNG BỊA. "
-                "ĐẦU RA: TEXT THUẦN; mỗi dòng 1 hàng; cột ngăn bằng '|', giữ thứ tự trái→phải. "
-                "Không in tiêu đề/markdown/giải thích. "
+                "Bạn là chuyên gia chuyển bảng từ ảnh/văn bản OCR thành TEXT có cột.\n"
+                f"ĐẦU RA: TEXT THUẦN; mỗi dòng 1 hàng; cột ngăn bằng '{sep_name}', giữ thứ tự trái→phải.\n"
+                "Không in tiêu đề/markdown/giải thích.\n"
                 "Nếu số cột thay đổi giữa các hàng, vẫn in đúng theo quan sát."
             )
-        return {"name": "generic", "min_cols": 3, "max_cols": None, "sys": sys}
+        return {"name": "generic", "min_cols": 2, "max_cols": None, "sys": sys, "sep": sep}
 
 
 # ---------- Utilities ----------
@@ -111,41 +125,64 @@ def _retry(fn, n=2, delay=1.0):
                 time.sleep(delay * (2 ** i))
     raise err
 
-def _postprocess_table_text(out: str, max_cols: Optional[int]) -> str:
-    """Chuẩn hoá khoảng trắng quanh '|', cắt cột dư nếu max_cols được đặt."""
+def _normalize_to_sep(out: str, sep: str) -> str:
+    """
+    Chuẩn hóa output về cùng 1 dấu phân cột (sep).
+    - Chấp nhận model trả bằng '|' hoặc TAB; sẽ convert về 'sep'
+    """
+    if not out:
+        return ""
     lines = []
-    for ln in (out or "").splitlines():
-        ln = ln.strip()
-        if not ln:
+    for ln in out.splitlines():
+        s = ln.strip()
+        if not s:
             continue
-        ln = re.sub(r"\s*\|\s*", " | ", ln)
-        ln = re.sub(r"^\|\s*", "", ln)
-        ln = re.sub(r"\s*\|$", "", ln)
-        parts = [p.strip() for p in ln.split("|")]
-        if max_cols and len(parts) > max_cols:
-            parts = parts[:max_cols]
-        ln = " | ".join(parts)
-        lines.append(ln)
+        # Thử tách theo TAB trước
+        if "\t" in s and sep == "\t":
+            parts = [p.strip() for p in s.split("\t")]
+        else:
+            # nếu có '|', tách theo '|'
+            if "|" in s and (sep == "\t" or sep == "|"):
+                parts = [p.strip() for p in re.split(r"\s*\|\s*", s)]
+            else:
+                # fallback: coi như 1 cột
+                parts = [s.strip()]
+        # Ghép theo sep
+        if sep == "\t":
+            s_norm = "\t".join(parts)
+        elif sep == "|":
+            s_norm = " | ".join(parts)
+        else:
+            s_norm = sep.join(parts)
+        lines.append(s_norm)
     return "\n".join(lines)
 
-def _basic_guardrail_text(text: str, min_cols: int) -> bool:
+def _basic_guardrail_text(text: str, min_cols: int, sep: str) -> bool:
     if not text:
         return False
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         return False
-    if all("|" not in ln for ln in lines):
+    # Chấp nhận nếu có ít nhất một trong hai dấu (sep hoặc '|') để nhận diện cột
+    col_sep = sep
+    def count_cols(ln: str) -> int:
+        if col_sep in ln:
+            return ln.count(col_sep) + 1
+        if "|" in ln:
+            return ln.count("|") + 1
+        return 1
+    ok = any(((col_sep in ln) or ("|" in ln)) for ln in lines)
+    if not ok:
         return False
-    for ln in lines:
-        if ln.count("|") + 1 < min_cols:
-            return False
-    return True
+    # kiểm số cột tối thiểu
+    return all(count_cols(ln) >= min_cols for ln in lines)
 
-# parse TEXT dạng 'code | name | note | end | begin'
-def _parse_financial_rows_text(text: str) -> List[Tuple[str, str, str, str, str]]:
+
+# ---------- Financial helpers (optional/lenient) ----------
+def _parse_financial_rows_text(text: str, sep: str) -> List[Tuple[str, str, str, str, str]]:
     rows = []
     for ln in (text or "").splitlines():
-        parts = [p.strip() for p in ln.split("|")]
+        parts = [p.strip() for p in (ln.split(sep) if sep in ln else ln.split("|"))]
         if len(parts) < 4:
             continue
         if len(parts) == 4:
@@ -159,7 +196,6 @@ def _parse_financial_rows_text(text: str) -> List[Tuple[str, str, str, str, str]
 _num_clean_re = re.compile(r"[^\d\.]")
 
 def _to_number_like(s: str) -> Optional[int]:
-    """Chuyển '1.234.567' → 1234567; nếu fail trả None."""
     if s is None:
         return None
     raw = _num_clean_re.sub("", s or "")
@@ -170,18 +206,17 @@ def _to_number_like(s: str) -> Optional[int]:
     except Exception:
         return None
 
-def _sanity_check_financial_text(out: str) -> bool:
-    """Kiểm tra nhanh: có mã tổng quan trọng, và số END/BEGIN parse được."""
-    rows = _parse_financial_rows_text(out)
+def _sanity_check_financial_text(out: str, sep: str) -> bool:
+    rows = _parse_financial_rows_text(out, sep)
     if not rows:
         return False
-    codes = {r[0] for r in rows}
-    if not codes.intersection({"100", "200", "270", "300", "400", "440"}):
-        return False
+    # chỉ kiểm tra rất nhẹ: có parse được ít nhất 1 số
     parsed_any = any((_to_number_like(end) is not None or _to_number_like(begin) is not None)
                      for _, _, _, end, begin in rows)
     return parsed_any
 
+
+# ---------- User payload builder ----------
 def _build_user_payload(table_text_cleaned: str, meta: Optional[dict]) -> List[dict]:
     user_text = (
         "VĂN BẢN ĐÃ LÀM SẠCH (BẢNG):\n"
@@ -189,9 +224,8 @@ def _build_user_payload(table_text_cleaned: str, meta: Optional[dict]) -> List[d
         f"{table_text_cleaned}\n"
         "-----END CLEANED TEXT-----\n\n"
         "YÊU CẦU:\n"
-        "- So và sửa theo ẢNH (nếu có) — ưu tiên ẢNH khi mâu thuẫn.\n"
-        "- Trả KẾT QUẢ cuối cùng với mỗi dòng 1 hàng; cột ngăn bằng '|'.\n"
-        "- Không thêm giải thích/markdown."
+        "- Nếu có ẢNH thì dùng ảnh để đối chiếu, ưu tiên ẢNH khi mâu thuẫn.\n"
+        "- Trả KẾT QUẢ cuối cùng, mỗi dòng 1 hàng, đúng số cột; KHÔNG thêm giải thích/markdown."
     )
     content = [{"type": "text", "text": user_text}]
     if meta:
@@ -205,26 +239,35 @@ def enhance_table_with_gpt(
     image_pil: Optional[Image.Image] = None,
     meta: Optional[dict] = None,
     mode: Optional[str] = None,
+    *,
     model: str = "gpt-4o-mini",
     temperature: float = 0.0,
     max_tokens: int = 3000,
     as_json: bool = False,
+    financial_strict: bool = False,
+    sep: str = "\t",
     log_diag: bool = True,
 ) -> str | List[Dict[str, Any]]:
     """
-    Cross-check ảnh (nếu có) + text đã clean (YAML) → trả bảng theo schema mode.
-    - mode=None → auto-detect (financial/generic)
+    Trích bảng theo generic-first, xuất TSV (sep='\t' mặc định).
+    - mode=None → detect theo meta/text (ưu tiên generic)
     - as_json=True → trả JSON; False → TEXT.
-    - Fallback: trả lại table_text_cleaned nếu GPT lỗi/format sai
+    - financial_strict: chỉ áp khi mode='financial' (mặc định False).
+    - Fallback: trả lại table_text_cleaned nếu GPT lỗi/format sai.
     """
     if not _OPENAI_OK or not os.getenv("OPENAI_API_KEY"):
         if log_diag:
             print("⚠️ GPT skipped: OPENAI_API_KEY missing hoặc OpenAI lib không khả dụng.")
         return table_text_cleaned
 
-    # auto detect nếu không truyền mode
-    mode = mode or detect_table_domain(table_text_cleaned)
-    schema = _schema_for_mode(mode, as_json=as_json)
+    # domain detect
+    mode = (mode or detect_table_domain(table_text_cleaned, meta)).lower()
+    schema = _schema_for_mode(mode, as_json=as_json, sep=sep)
+    # override min/max columns từ meta (nếu có)
+    min_cols = int((meta or {}).get("table_min_cols", schema.get("min_cols", 2)) or 2)
+    max_cols = (meta or {}).get("table_max_cols", schema.get("max_cols"))
+    schema["min_cols"] = min_cols
+    schema["max_cols"] = max_cols
 
     # build messages
     content = _build_user_payload(table_text_cleaned, meta)
@@ -251,7 +294,6 @@ def enhance_table_with_gpt(
             print(f"🧠 GPT ok. mode={schema['name']} as_json={as_json} tokens≈{used if used is not None else '?'}")
 
         if as_json:
-            # một số model có thể bọc ```json ...```
             raw = out.strip()
             if raw.startswith("```"):
                 raw = re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.I | re.M)
@@ -277,17 +319,19 @@ def enhance_table_with_gpt(
                     return table_text_cleaned
             return data
 
-        # TEXT mode: post-process + guardrail
-        out = _postprocess_table_text(out, max_cols=schema.get("max_cols"))
-        if not _basic_guardrail_text(out, schema["min_cols"]):
+        # TEXT mode → normalize về sep + guardrail
+        out = _normalize_to_sep(out, sep=schema["sep"])
+        if not _basic_guardrail_text(out, schema["min_cols"], sep=schema["sep"]):
             if log_diag:
                 print("⚠️ GPT output format invalid → fallback cleaned text.")
             return table_text_cleaned
 
-        if schema["name"] == "financial" and not _sanity_check_financial_text(out):
-            if log_diag:
-                print("⚠️ Financial sanity check failed → fallback.")
-            return table_text_cleaned
+        # Sanity tài chính chỉ khi bật financial_strict
+        if schema["name"] == "financial" and financial_strict:
+            if not _sanity_check_financial_text(out, sep=schema["sep"]):
+                if log_diag:
+                    print("⚠️ Financial sanity check failed → fallback.")
+                return table_text_cleaned
 
         return out
 
@@ -305,8 +349,7 @@ def _enhance_plain_text_with_gpt(text_raw: str,
                                  max_tokens: int = 2000,
                                  log_diag: bool = True) -> str:
     """
-    Dùng khi muốn clean VĂN BẢN THƯỜNG (không phải bảng).
-    Làm sạch nhẹ: sửa lỗi OCR nhỏ, nối dòng gãy, giữ nguyên nội dung; không đổi sang bảng/markdown.
+    Clean văn bản thường (OCR): sửa lỗi nhỏ, nối dòng gãy, giữ nguyên nội dung.
     """
     if not _OPENAI_OK or not os.getenv("OPENAI_API_KEY"):
         if log_diag:
@@ -352,41 +395,49 @@ def _enhance_plain_text_with_gpt(text_raw: str,
 def enhance_with_gpt(
     text_raw: str,
     meta: dict | None = None,
-    image_path: str | None = None,
+    image: str | None = None,  # path hoặc PIL sẽ được auto mở ở runner
     mode: str | None = None,
     **kwargs
 ) -> str:
     """
-    Tương thích ngược với code cũ:
-    - Nếu có ảnh hoặc nội dung trông như BẢNG → gọi enhance_table_with_gpt
-    - Ngược lại → clean văn bản thường bằng _enhance_plain_text_with_gpt
+    Tương thích với runner:
+    - Nếu có dấu hiệu bảng (nhiều '|' hoặc TAB) hoặc có ảnh → enhance_table_with_gpt
+    - Ngược lại → _enhance_plain_text_with_gpt
+    Hỗ trợ tham số mới:
+      * sep="\t" (mặc định TSV)
+      * financial_strict=False
     """
-    # Heuristic: nếu có dấu '|' nhiều hoặc cues BCTC → coi như bảng
     looks_like_table = False
     t = (text_raw or "").lower()
-    if ("|" in t and t.count("|") >= 2) or re.search(
-        r"\bmã\s*số\b|\bsố\s*cuối\s*năm\b|\bsố\s*đầu\s*năm\b|\bcode\b", t, re.I
-    ):
+    if ("\t" in t) or ("|" in t and t.count("|") >= 2):
         looks_like_table = True
 
+    # runner gửi image=path; cố gắng mở
     pil = None
-    if image_path and os.path.exists(image_path):
+    if image and isinstance(image, str) and os.path.exists(image):
         try:
-            pil = Image.open(image_path)
+            pil = Image.open(image)
         except Exception:
             pil = None
 
     if looks_like_table or pil is not None:
-        mode_eff = mode or ("financial" if looks_like_table else "generic")
+        # default generic-first, TSV
+        sep = kwargs.pop("sep", "\t")
+        financial_strict = kwargs.pop("financial_strict", False)
         return enhance_table_with_gpt(
             table_text_cleaned=text_raw,
             image_pil=pil,
             meta=meta,
-            mode=mode_eff,
-            **kwargs
+            mode=mode,  # None → auto detect (ưu tiên generic)
+            sep=sep,
+            financial_strict=financial_strict,
+            **{k: v for k, v in kwargs.items() if k in {"model", "temperature", "max_tokens", "as_json", "log_diag"}}
         )
 
-    # Văn bản thường
+    # Văn bản thường: tôn trọng meta.enable_paragraph_gpt (mặc định False)
+    enable_text = bool((meta or {}).get("enable_paragraph_gpt", False))
+    if not enable_text:
+        return text_raw  # giữ nguyên text (đã có sanitizer ở runner)
     return _enhance_plain_text_with_gpt(
         text_raw=text_raw,
         meta=meta,

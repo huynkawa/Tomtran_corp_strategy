@@ -18,7 +18,6 @@ Yêu cầu:
   pip install pdf2image pillow opencv-python-headless numpy pytesseract
   + Đã cài Tesseract (tesseract.exe có trong PATH hoặc đặt env TESSERACT_CMD)
 """
-
 from __future__ import annotations
 import os, re, glob, json, argparse, hashlib
 from typing import Optional, Tuple, Dict, List
@@ -28,19 +27,69 @@ import cv2
 from PIL import Image
 import pytesseract
 from pytesseract import Output as TessOutput
+# ==== YAML CONFIG (validator & text-clean) ====
+import yaml
+
+# Cho phép override qua ENV, nếu không thì dùng đường dẫn bạn cung cấp:
+YAML_TEXT_PATH  = os.getenv(
+    "P1A_YAML_TEXT",
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_text.yaml"
+)
+YAML_TABLE_PATH = os.getenv(
+    "P1A_YAML_TABLE",
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_table.yaml"
+)
+
+
+# ---- RATIOS YAML (tuỳ chọn) ----
+YAML_RATIO_PATH = os.getenv(
+    "P1A_YAML_RATIO",
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_ratios_bctc.yaml"
+)
+_yaml_cache = {"text": None, "table": None, "ratio": None}  # ← mở rộng cache (đổi dòng cũ)
+
+def _load_yaml_ratio():
+    if not os.path.isfile(YAML_RATIO_PATH):
+        return {}
+    if _yaml_cache.get("ratio") is None:
+        with open(YAML_RATIO_PATH, "r", encoding="utf-8") as f:
+            _yaml_cache["ratio"] = yaml.safe_load(f) or {}
+    return _yaml_cache["ratio"]
+
+_yaml_cache = {"text": None, "table": None}
+
+def _load_yaml_cfg():
+    """Load YAML cấu hình chỉ 1 lần (cache). Trả về (cfg_table, cfg_text)."""
+    global _yaml_cache
+    # Kiểm tra tồn tại để báo lỗi rõ ràng
+    if not os.path.isfile(YAML_TABLE_PATH):
+        raise FileNotFoundError(f"Không tìm thấy YAML TABLE: {YAML_TABLE_PATH}")
+    if not os.path.isfile(YAML_TEXT_PATH):
+        raise FileNotFoundError(f"Không tìm thấy YAML TEXT:  {YAML_TEXT_PATH}")
+
+    if _yaml_cache["table"] is None:
+        with open(YAML_TABLE_PATH, "r", encoding="utf-8") as f:
+            _yaml_cache["table"] = yaml.safe_load(f) or {}
+    if _yaml_cache["text"] is None:
+        with open(YAML_TEXT_PATH, "r", encoding="utf-8") as f:
+            _yaml_cache["text"] = yaml.safe_load(f) or {}
+
+    return _yaml_cache["table"], _yaml_cache["text"]
 
 # [ADD] hỗ trợ clean/append
 import shutil
 APPEND_MODE = False  # sẽ bật True trong main() khi --clean a
 
 import src.env  # ✅ đảm bảo nạp .env.active và set OPENAI_API_KEY
-# [ADD] GPT Assistant integration
-from openai import OpenAI
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# === GPT enhancer (module ngoài) + công tắc ngay trong code ===
+from src.p1a_gpt_ocr_bctc import enhance_table_with_gpt as gpt_fix_table
+
+USE_GPT = True   # True = BẬT GPT; False = TẮT GPT
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (theo yêu cầu) =========
-PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_financial_reports_test"
-OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_GPT-80"
+PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\\outputs\p1_prelight_ocr_bctc"
+OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_GPT_80"
 
 # ========= Cấu hình Tesseract =========
 OCR_LANG_DEFAULT = "vie+eng"
@@ -343,6 +392,474 @@ def reflow_lines_from_tsv_dict(data: Dict[str, List],
     return "\n".join(out_lines)
 
 
+# ========= HELPERS: detect/extract table PIPE from text =========
+# ========= HELPERS: detect/extract table PIPE from text =========
+_PIPE_BLOCK_PAT = re.compile(r"<<<PIPE>>>[\s\S]*?<<<END>>>", re.IGNORECASE)
+
+def _extract_pipe_blocks(text: str) -> List[str]:
+    """Trả về danh sách block PIPE (ưu tiên khối được code đánh dấu <<<PIPE>>> … <<<END>>>).
+       Nếu không có, sẽ tìm các đoạn có dấu '|' lặp nhiều dòng (>=3 dòng có '|')."""
+    if not text: 
+        return []
+    blocks = []
+    # 1) Ưu tiên block có đánh dấu
+    for m in re.finditer(r"<<<PIPE>>>\s*(.*?)\s*<<<END>>>", text, flags=re.S|re.I):
+        blk = m.group(1).strip()
+        if blk:
+            blocks.append(blk)
+    if blocks:
+        return blocks
+
+    # 2) Tự tìm đoạn có '|' (ít nhất 3 dòng)
+    lines = text.splitlines()
+    cur = []
+    for ln in lines:
+        if "|" in ln:
+            cur.append(ln)
+        else:
+            if len(cur) >= 3:
+                blocks.append("\n".join(cur).strip())
+            cur = []
+    if len(cur) >= 3:
+        blocks.append("\n".join(cur).strip())
+    return blocks
+
+_NUMERIC_HEAVY = re.compile(r"\d{1,3}(?:[.,]\d{3}){1,}")  # số có nhóm nghìn
+
+def _is_numeric_table_like(pipe_block: str) -> bool:
+    """Có nhiều số dạng 1.234.567 hoặc 1,234,567 → coi là bảng số liệu."""
+    if not pipe_block or "|" not in pipe_block:
+        return False
+    num_lines = 0
+    for ln in pipe_block.splitlines():
+        if "|" not in ln:
+            continue
+        if len(_NUMERIC_HEAVY.findall(ln)) >= 1:
+            num_lines += 1
+    return num_lines >= 3  # ít nhất 3 dòng có số
+
+def _replace_block(original_text: str, old_block: str, new_block: str) -> str:
+    """
+    Nếu old_block nằm trong <<<PIPE>>>…<<<END>>> thì thay tại chỗ.
+    Nếu không, chúng ta sẽ **append** một block kiểm tra ở cuối (không phá văn bản).
+    """
+    m = re.search(r"(<<<PIPE>>>\s*)(.*?)(\s*<<<END>>>)", original_text, flags=re.S|re.I)
+    if m and old_block.strip() in m.group(2):
+        return original_text[:m.start(2)] + new_block + original_text[m.end(2):]
+    return original_text.rstrip() + "\n\n### [TABLE→GPT CHECK]\n<<<PIPE>>>\n" + new_block + "\n<<<END>>>"
+
+
+
+def gpt_numbers_only_validate(text_raw: str, image_path: Optional[str], meta_partial: dict) -> str:
+    """
+    - Tìm các block PIPE trong text_raw
+    - Lọc block có nhiều số liệu → chỉ những block này mới cho GPT kiểm tra
+    - GPT đối chiếu ẢNH (image_path) và chỉnh lại số (giữ PIPE)
+    - Thay thế block trong text (nếu block có đánh dấu) hoặc append kết quả ở cuối
+    """
+    try:
+        if not text_raw:
+            return text_raw
+        if not image_path or not os.path.exists(image_path):
+            return text_raw
+
+        pipe_blocks = _extract_pipe_blocks(text_raw)
+        if not pipe_blocks:
+            return text_raw
+
+        out_text = text_raw
+        for blk in pipe_blocks:
+            if not _is_numeric_table_like(blk):
+                continue
+
+            try:
+                from PIL import Image as _PILImage
+                img = _PILImage.open(image_path).convert("RGB")
+            except Exception as e:
+                print(f"⚠️ Không mở được ảnh cho GPT validate: {e}")
+                return text_raw
+
+            fixed = gpt_fix_table(
+                table_text_cleaned=blk,
+                image_pil=img,
+                meta={
+                    "company_hint": meta_partial.get("company"),
+                    "period_hint":  meta_partial.get("period"),
+                },
+                mode="financial",
+                model=os.getenv("GPT_OCR_MODEL", "gpt-4o-mini"),
+                temperature=0.0,
+                log_diag=False,
+            )
+
+
+            if fixed and "|" in fixed and fixed.strip() != blk.strip():
+                out_text = _replace_block(out_text, old_block=blk, new_block=fixed)
+
+        return out_text
+
+    except Exception as e:
+        print(f"⚠️ gpt_numbers_only_validate error → fallback: {e}")
+        return text_raw
+def _cleanup_number_str(raw: str, g):
+    if raw is None: return None
+    s = str(raw)
+    # drop chars
+    for ch in (g.get("number_cleanup", {}).get("drop_chars") or []):
+        s = s.replace(ch, "")
+    # regex fixes
+    for pat in (g.get("number_cleanup", {}).get("fix_patterns") or []):
+        s = re.sub(pat["from"], pat["to"], s)
+    s = s.strip()
+    return s
+
+def _to_amount_or_none(s: str) -> Optional[int]:
+    if not s: return None
+    t = s.strip()
+    # normalize thousand separator .
+    t = t.replace(",", ".")
+    # keep only digits, dots and minus
+    t = re.sub(r"[^0-9\.\-]", "", t)
+    if t in ("", "-", "--"): return None
+    # remove dots to make integer (thousands)
+    t = t.replace(".", "")
+    try:
+        return int(t)
+    except Exception:
+        return None
+
+def _auto_layout_for_pipe(pipe_block: str):
+    # đếm cột ở dòng dài nhất để suy ước L5/L4/L3
+    lines = [ln for ln in pipe_block.splitlines() if "|" in ln]
+    if not lines: return "L5"
+    cols = max(len([c for c in ln.split("|")]) for ln in lines)
+    if cols >= 5: return "L5"
+    if cols == 4: return "L4"
+    return "L3A"  # tối thiểu 3 cột: name | end | begin
+
+def _parse_pipe_to_rows(pipe_block: str, cfg):
+    g = (cfg or {}).get("globals", {})
+    layouts = g.get("layouts", {})
+    lay = _auto_layout_for_pipe(pipe_block)
+    layout = layouts.get(lay) or layouts.get("L5")
+    col_map = layout["column_map"]
+    fill_missing = (layout.get("fill_missing") or {})
+
+    rows = []
+    for ln in pipe_block.splitlines():
+        if "|" not in ln: 
+            continue
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        def _get(colname):
+            idx = col_map.get(colname)
+            if idx is None:
+                return fill_missing.get(colname)
+            return cells[idx] if idx < len(cells) else fill_missing.get(colname)
+
+        code  = (_get("code") or "").strip()
+        name  = (_get("name") or "").strip()
+        note  = (_get("note") or None)
+        end   = _cleanup_number_str(_get("end"), g)
+        begin = _cleanup_number_str(_get("begin"), g)
+
+        # infer code by name if requested
+        if not code and layout.get("infer_code_from_name"):
+            # có thể map bằng alias trong cfg.globals.name_aliases / code_name_pairs
+            pass
+
+        rows.append({
+            "code": code,
+            "name": name,
+            "note": note,
+            "end":  _to_amount_or_none(end),
+            "begin":_to_amount_or_none(begin),
+            "_raw_end": end, "_raw_begin": begin,
+        })
+    return rows
+
+def _index_by_code(rows):
+    idx = {}
+    for r in rows:
+        c = (r["code"] or "").strip()
+        if c:
+            idx[c] = r
+    return idx
+
+def _sum_codes(codes: List[str], idx: Dict[str, dict], col: str) -> Optional[int]:
+    total = 0
+    any_used = False
+    for code in codes:
+        code = str(code).strip()
+        sign = 1
+        if code.startswith("-"):
+            sign = -1
+            code = code[1:].strip()
+        row = idx.get(code)
+        if not row: 
+            continue
+        val = row.get(col)
+        if val is None:
+            continue
+        total += sign * int(val)
+        any_used = True
+    return total if any_used else None
+
+
+def _apply_section_rules(rows, cfg_section):
+    """Trả về (changed, rows). Áp dụng rules eq vào cả end & begin khi có."""
+    changed = False
+    idx = _index_by_code(rows)
+    rules = cfg_section.get("rules") or []
+    for rule in rules:
+        # rule: {eq: ["PARENT", ["C1","C2","-C3"]]}
+        if "eq" not in rule: 
+            continue
+        parent, children = rule["eq"][0], rule["eq"][1]
+        for col in ("end", "begin"):
+            parent_row = idx.get(str(parent))
+            if not parent_row: 
+                continue
+            child_sum = _sum_codes(children, idx, col)
+            if child_sum is None: 
+                continue
+            parent_val = parent_row.get(col)
+            if parent_val != child_sum:
+                # auto-fix: set parent = sum(children)
+                parent_row[col] = child_sum
+                changed = True
+    return changed, rows
+
+def _apply_cross_formulas(rows, cfg_globals):
+    """Áp dụng cross_formulas dạng '270 = 100 + 200' cho end/begin nếu có."""
+    changed = False
+    idx = _index_by_code(rows)
+    for f in (cfg_globals.get("cross_formulas") or []):
+        # f: {name: "...", end: "270 = 100 + 200", begin: "270 = 100 + 200"}
+        for col in ("end", "begin"):
+            expr = f.get(col)
+            if not expr: 
+                continue
+            m = re.match(r"\s*(\S+)\s*=\s*(.+)$", expr)
+            if not m: 
+                continue
+            parent = m.group(1).strip()
+            rhs = [x.strip() for x in m.group(2).replace("+"," + ").replace("-"," - ").split() if x.strip() not in {"+","-"}]
+            # rebuild with signs (simple parse)
+            signed = []
+            prev_sign = +1
+            for tok in m.group(2).split():
+                tok = tok.strip()
+                if tok == "+": prev_sign = +1; continue
+                if tok == "-": prev_sign = -1; continue
+                signed.append(("-" + tok) if prev_sign < 0 else tok)
+            s = _sum_codes(signed, idx, col)
+            if s is None: 
+                continue
+            prow = idx.get(parent)
+            if prow and prow.get(col) != s:
+                prow[col] = s
+                changed = True
+    return changed, rows
+
+def _rows_to_pipe(rows, cfg):
+    g = (cfg or {}).get("globals", {})
+    cols = g.get("column_names") or {"code":"code","name":"name","note":"note","end":"end","begin":"begin"}
+    def _fmt(v):
+        if v is None: return ""
+        s = f"{int(v):,}".replace(",", ".")
+        return s
+    out = []
+    header = f"{cols['code']} | {cols['name']} | {cols.get('note','note')} | {cols['end']} | {cols['begin']}"
+    out.append(header)
+    for r in rows:
+        out.append(f"{r.get('code','')} | {r.get('name','')} | {r.get('note','') or ''} | {_fmt(r.get('end'))} | {_fmt(r.get('begin'))}")
+    return "\n".join(out)
+
+# ====== NAME-BASED MATCHING HELPERS ======
+def _strip_accents(s: str) -> str:
+    rep = {
+        "đ":"d","Đ":"D","ơ":"o","Ơ":"O","ô":"o","Ô":"O","ư":"u","Ư":"U",
+        "ă":"a","Ă":"A","â":"a","Â":"A","á":"a","Á":"A","à":"a","À":"A","ả":"a","Ả":"A","ã":"a","Ã":"A","ạ":"a","Ạ":"A",
+        "é":"e","É":"E","è":"e","È":"E","ẻ":"e","Ẻ":"E","ẽ":"e","Ẽ":"E","ẹ":"e","Ẹ":"E",
+        "í":"i","Í":"I","ì":"i","Ì":"I","ỉ":"i","Ỉ":"I","ĩ":"i","Ĩ":"I","ị":"i","Ị":"I",
+        "ó":"o","Ó":"O","ò":"o","Ò":"O","ỏ":"o","Ỏ":"O","õ":"o","Õ":"O","ọ":"o","Ọ":"O",
+        "ú":"u","Ú":"U","ù":"u","Ù":"U","ủ":"u","Ủ":"U","ũ":"u","Ũ":"U","ụ":"u","Ụ":"U",
+        "ý":"y","Ý":"Y","ỳ":"y","Ỳ":"Y","ỷ":"y","Ỷ":"Y","ỹ":"y","Ỹ":"Y","ỵ":"y","Ỵ":"Y",
+    }
+    t = (s or "").strip()
+    for k,v in rep.items():
+        t = t.replace(k, v)
+    t = re.sub(r"\s+", " ", t)
+    return t.lower()
+
+def _norm_name(s: str, name_aliases: Dict[str,str]) -> str:
+    t = _strip_accents(s)
+    # map alias không dấu → tên chuẩn (có dấu) rồi lại chuẩn hoá để khớp ổn định
+    if name_aliases:
+        for alias, canon in name_aliases.items():
+            if _strip_accents(alias) == t:
+                return _strip_accents(canon)
+    return t
+
+def _index_by_name(rows: list, cfg_table: dict) -> Dict[str, list]:
+    """Trả về map {normalized_name: [rows...]} để tra theo tên."""
+    aliases = (cfg_table.get("globals") or {}).get("name_aliases") or {}
+    idx: Dict[str, list] = {}
+    for r in rows:
+        nm = _norm_name(r.get("name",""), aliases)
+        if nm:
+            idx.setdefault(nm, []).append(r)
+    return idx
+
+def _find_first_by_name(name: str, name_idx: Dict[str,list], cfg_table: dict):
+    nm = _norm_name(name, (cfg_table.get("globals") or {}).get("name_aliases") or {})
+    lst = name_idx.get(nm) or []
+    return lst[0] if lst else None
+
+def _sum_by_names(names: list, name_idx: Dict[str,list], col: str, cfg_table: dict):
+    total = 0
+    any_used = False
+    for n in names:
+        sign = 1
+        key = n
+        if isinstance(n, str) and n.startswith("-"):
+            sign = -1
+            key = n[1:]
+        row = _find_first_by_name(key, name_idx, cfg_table)
+        if not row: 
+            continue
+        val = row.get(col)
+        if val is None:
+            continue
+        total += sign * int(val)
+        any_used = True
+    return total if any_used else None
+
+
+def _norm_noacc(s: str) -> str:
+    return _strip_accents(s or "")
+
+def _first_value_by_keysyn(rows: list, name_idx: dict, synonyms: dict, key: str, col: str):
+    """Tìm giá trị theo nhóm synonym key (vd 'current_assets' → ['Tài sản ngắn hạn', ...])."""
+    alts = (synonyms or {}).get(key) or []
+    for nm in alts:
+        row = _find_first_by_name(nm, name_idx, {"globals":{"name_aliases":{}}})
+        if row:
+            v = row.get(col)
+            if v is not None:
+                return v
+    return None
+
+def _compute_ratios_from_pipe(pipe_block: str, ratio_cfg: dict) -> list[dict]:
+    """Trả về list[{name, end, begin}] — chỉ tính khi đủ dữ liệu."""
+    if not ratio_cfg:
+        return []
+    rows = _parse_pipe_to_rows(pipe_block, cfg={})
+    name_idx = _index_by_name(rows, {"globals":{"name_aliases":{}}})
+    syn = ratio_cfg.get("synonyms") or {}
+    defs = ratio_cfg.get("ratios") or []
+    out = []
+    for rdef in defs:
+        name = rdef.get("name")
+        num_keys = rdef.get("numerator") or []
+        den_keys = rdef.get("denominator") or []
+        if not name or not num_keys or not den_keys:
+            continue
+        row = {"name": name, "end": None, "begin": None}
+        for col in ("end","begin"):
+            num = None
+            for k in num_keys:
+                num = _first_value_by_keysyn(rows, name_idx, syn, k, col)
+                if num is not None: break
+            den = None
+            for k in den_keys:
+                den = _first_value_by_keysyn(rows, name_idx, syn, k, col)
+                if den is not None: break
+            if num is not None and den not in (None, 0):
+                row[col] = float(num) / float(den)
+        if row["end"] is not None or row["begin"] is not None:
+            out.append(row)
+    return out
+
+def _format_ratios_as_text(items: list[dict]) -> str:
+    if not items: return ""
+    lines = ["\n### [RATIOS]"]
+    for it in items:
+        e = f"{it['end']:.4f}" if it.get("end") is not None else "—"
+        b = f"{it['begin']:.4f}" if it.get("begin") is not None else "—"
+        lines.append(f"- {it['name']}: END={e} | BEGIN={b}")
+    return "\n".join(lines) + "\n"
+
+
+def yaml_validate_and_autofix_pipe(pipe_block: str, cfg: dict) -> str:
+    """Parse → apply rules (code-based) → cross formulas → name-based rules → render lại PIPE."""
+    # 0) Parse & chuẩn bị
+    rows = _parse_pipe_to_rows(pipe_block, cfg)
+    g = (cfg or {}).get("globals", {}) or {}
+
+    changed = False
+
+    # 1) RULES THEO MÃ (sections.assets / sections.equity_liab)
+    bs = (cfg or {}).get("balance_sheet") or {}
+    if bs:
+        for sec_name in ("assets", "equity_liab"):
+            sec = (bs.get("sections") or {}).get(sec_name)
+            if sec:
+                c, rows = _apply_section_rules(rows, sec)
+                changed = changed or c
+
+    # 2) CROSS FORMULAS THEO MÃ (globals.cross_formulas: "270 = 100 + 200")
+    c, rows = _apply_cross_formulas(rows, g)
+    changed = changed or c
+
+    # 3) RULES THEO TÊN (globals.parent_children_by_name, balance_sheet.cross_sheet_rules_by_name)
+    try:
+        parent_children_by_name = g.get("parent_children_by_name") or {}
+        name_idx = _index_by_name(rows, cfg)
+
+        # 3a) Cha–con theo TÊN
+        for parent_name, children_names in parent_children_by_name.items():
+            prow = _find_first_by_name(parent_name, name_idx, cfg)
+            if not prow:
+                continue
+            for col in ("end", "begin"):
+                s = _sum_by_names(children_names, name_idx, col, cfg)
+                if s is None:
+                    continue
+                if prow.get(col) != s:
+                    prow[col] = s
+                    changed = True
+
+        # 3b) Cross-sheet by name (ví dụ: "Tổng tài sản" == "Tổng nguồn vốn")
+        for rule in (bs.get("cross_sheet_rules_by_name") or []):
+            eq = rule.get("equals") or {}
+            left_name  = eq.get("left")
+            right_name = eq.get("right")
+            if not left_name or not right_name:
+                continue
+            lrow = _find_first_by_name(left_name, name_idx, cfg)
+            rrow = _find_first_by_name(right_name, name_idx, cfg)
+            if not lrow or not rrow:
+                continue
+            for col in ("end", "begin"):
+                lv = lrow.get(col); rv = rrow.get(col)
+                if lv is None and rv is not None:
+                    lrow[col] = rv; changed = True
+                elif rv is None and lv is not None:
+                    rrow[col] = lv; changed = True
+                elif lv is not None and rv is not None and lv != rv:
+                    # Ưu tiên lấy theo bên phải (có thể đổi tuỳ ý)
+                    lrow[col] = rv
+                    changed = True
+    except Exception as _e:
+        print("⚠️ NAME-based validator warning:", _e)
+
+    # 4) Xuất lại PIPE (nếu không đổi, trả về như cũ)
+    return _rows_to_pipe(rows, cfg)
+
+
+
+
 # ========= OCR 1 ảnh =========
 def ocr_image_to_text_and_meta(img_bgr, ocr_lang: str, ocr_cfg: str) -> Tuple[str, str]:
     try:
@@ -412,83 +929,6 @@ def detect_report_title_and_statement(text: str):
     return None, None
 
 
-# ========= GPT Assistant enhancement =========
-def enhance_with_gpt(text_raw: str, meta: dict, image_path: Optional[str]=None) -> str:
-    """
-    Dùng GPT (gpt-4o-mini) để tái cấu trúc đoạn OCR:
-    - Nhận text OCR + metadata + ảnh gốc (nếu có)
-    - Viết lại bảng tài chính thành đoạn văn rõ ràng, có số liệu đầy đủ
-    - Có fallback nếu GPT lỗi → trả lại text OCR gốc
-    """
-    import os, json, base64
-    from openai import OpenAI
-
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-    try:
-        # ----- Chuẩn bị message -----
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Bạn là chuyên gia kế toán trong lĩnh vực bảo hiểm. "
-                    "Hãy đọc bảng cân đối kế toán hoặc báo cáo tài chính được OCR dưới đây "
-                    "và viết lại nó thành đoạn mô tả tự nhiên, chính xác về các chỉ tiêu và số liệu."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"""
---- Metadata ---
-{json.dumps(meta, ensure_ascii=False, indent=2)}
-
---- Nội dung OCR ---
-{text_raw}
-
-Yêu cầu:
-- Giữ nguyên số liệu (Số cuối năm / Số đầu năm)
-- Diễn giải thành đoạn văn dễ hiểu, có mã số và ý nghĩa của từng chỉ tiêu
-- Nếu có lỗi chính tả hoặc gãy dòng nhỏ, hãy tự hiệu chỉnh nhẹ
-Ví dụ:
-"A. Tài sản ngắn hạn gồm: Tiền và các khoản tương đương tiền (mã 110) là 33.057 tỷ cuối năm và 145.848 tỷ đầu năm..."
-"""
-            }
-        ]
-
-        # ----- Gửi kèm ảnh (nếu có) -----
-        if image_path and os.path.exists(image_path):
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Đây là hình ảnh gốc của bảng để bạn đối chiếu:"},
-                    {
-                        "type": "image_url",
-                        "image_url": { "url": f"data:image/png;base64,{img_b64}" }
-                    }
-                ]
-            })
-
-        # ----- Gọi GPT -----
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.3,
-        )
-
-        out_text = resp.choices[0].message.content.strip()
-        print("🧠 GPT enhancement completed.")
-        return out_text
-
-    except Exception as e:
-        # ----- Fallback: nếu GPT lỗi, trả về text OCR gốc -----
-        print(f"⚠️ GPT error (fallback to text only): {e}")
-        return text_raw
-
-
-
 # ========= Tìm & xử lý ảnh prelight =========
 def find_prelight_pages(prelight_root: str) -> Dict[Tuple[str,int], Dict[str,str]]:
     """
@@ -516,11 +956,49 @@ def process_one_page(out_root: str, base: str, page_no: int,
     out_dir = os.path.join(out_root)  # mirror: prelight đã mirror; p1a chỉ đặt chung 1 root theo yêu cầu
     ensure_dir(out_dir)
 
+    # --- OCR ---
     bgr = cv2.cvtColor(np.array(Image.open(src_img_path).convert("RGB")), cv2.COLOR_RGB2BGR)
     txt, meta_partial_json = ocr_image_to_text_and_meta(bgr, ocr_lang, ocr_cfg)
     meta_partial = json.loads(meta_partial_json)
-    # [ADD] Dùng GPT để viết lại bảng mô tả rõ ràng hơn
-    txt = enhance_with_gpt(txt, meta_partial, src_img_path)
+
+    # --- GPT numbers-only (đối chiếu PNG, chỉ sửa bảng số) ---
+    if USE_GPT:
+        print("🧠 GPT table-check: ON (numbers-only)")
+        txt = gpt_numbers_only_validate(txt, src_img_path, meta_partial)
+    else:
+        print("🧠 GPT table-check: OFF")
+
+    # === YAML VALIDATE/AUTOFIX (chỉ chạy trên các bảng PIPE) ===
+    cfg_table, cfg_text = _load_yaml_cfg()          # nạp YAML table/text
+    pipe_blocks = _extract_pipe_blocks(txt) or []    # tách block PIPE từ txt
+
+    any_changed = False
+    for blk in pipe_blocks:
+        if not _is_numeric_table_like(blk):
+            continue
+        try:
+            # áp quy tắc theo MÃ (eq/cross) + theo TÊN (parent_children_by_name/cross_sheet_by_name)
+            fixed_pipe = yaml_validate_and_autofix_pipe(blk, cfg_table)
+        except Exception as e:
+            print("⚠️ YAML validator error:", e)
+            continue
+
+        if fixed_pipe and fixed_pipe.strip() != blk.strip():
+            # _replace_block(original_text, old_block, new_block) — gọi theo thứ tự đối số
+            txt = _replace_block(txt, blk, fixed_pipe)
+            any_changed = True
+
+    print("🔧 YAML validator:", "adjusted tables" if any_changed else "no changes")
+
+
+    # === RATIOS (tuỳ chọn, nếu có file YAML ratio) ===
+    ratio_cfg = _load_yaml_ratio()
+    if ratio_cfg and pipe_blocks:
+        first_numeric = next((b for b in pipe_blocks if _is_numeric_table_like(b)), None)
+        if first_numeric:
+            ratios = _compute_ratios_from_pipe(first_numeric, ratio_cfg)
+            txt = txt.rstrip() + _format_ratios_as_text(ratios)
+
 
     # ---- Ghi file (append-only nếu APPEND_MODE=True) ----
     text_path = os.path.join(out_dir, f"{base}_page{page_no}_text.txt")
@@ -613,6 +1091,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--ocr-lang", type=str, default=OCR_LANG_DEFAULT, help="Ngôn ngữ OCR (mặc định: vie+eng)")
     p.add_argument("--ocr-cfg",  type=str, default=OCR_CFG_DEFAULT,  help="Tesseract config (mặc định: --psm 6)")
 
+
     # [ADD] hỏi/xoá/append/bỏ qua khi output đã tồn tại
     p.add_argument("--clean", choices=["ask","y","a","n"], default="ask",
                 help="ask: hỏi; y: xoá output cũ; a: giữ thư mục & chỉ ghi file mới; n: bỏ qua nếu đã tồn tại")
@@ -643,6 +1122,8 @@ def main():
 
     # [ADD] bật cờ append-only
     APPEND_MODE = (args.clean == "a")
+    print(f"🧠 USE_GPT (code switch) = {USE_GPT}")
+
 
     # Chạy OCR trên ảnh prelight
     run_ocr_on_prelight(

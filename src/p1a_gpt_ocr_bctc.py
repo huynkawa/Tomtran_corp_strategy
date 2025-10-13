@@ -72,7 +72,14 @@ USER_INSTR = (
 # ====== HELPERS ==========
 # =========================
 
+# [MOD] 1) Resize ảnh về cạnh dài ~1600px để tránh input quá nặng
 def _pil_to_base64_png(img: Image.Image) -> str:
+    # shrink longest side to 1600px to keep tokens/latency bounded
+    MAX_SIDE = 1600
+    w, h = img.size
+    if max(w, h) > MAX_SIDE:
+        scale = MAX_SIDE / float(max(w, h))
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -134,6 +141,13 @@ def _normalize_vn_amount(s: str) -> str:
 
     if sign or neg:
         out = "-" + out
+
+    # [MOD] 5) tidy up các trường hợp '-0' → '0', và không trả rỗng vô nghĩa
+    if out == "-0":
+        out = "0"
+    if out == "":
+        return s.strip()
+
     return out
 
 
@@ -210,11 +224,14 @@ def _guardrail_pipe(out_pipe: str, min_cols_required: int, financial_mode: bool)
     if maj < max(2, min_cols_required):
         return False
 
-    # nếu financial: yêu cầu đa số dòng có >= 5 cột
+    # [MOD] 3) Nếu financial: ưu tiên >=5 cột, nhưng chấp nhận 4 cột khi rất nhất quán
     if financial_mode:
         enough5 = sum(1 for c in col_counts if c >= FINANCIAL_MIN_COLS)
-        if enough5 < int(0.6 * len(col_counts)):  # nới nhẹ vì có thể thiếu NOTE
-            return False
+        if enough5 < int(0.6 * len(col_counts)):
+            # chấp nhận 4 cột nếu đa số tuyệt đối và có logic END/BEGIN (phần này sẽ do caller map)
+            enough4 = sum(1 for c in col_counts if c >= 4)
+            if enough4 < int(0.8 * len(col_counts)):
+                return False
 
     return True
 
@@ -258,6 +275,16 @@ def _build_messages(image_b64: str, pipe_hint: str, mode: str, meta: Dict[str, A
     return messages, min_cols, financial_mode
 
 
+# [MOD] 2) Cắt gọn pipe hint nếu quá dài để tiết kiệm context
+def _truncate_pipe_hint(pipe: str, max_lines: int = 220) -> str:
+    lines = [ln for ln in (pipe or "").splitlines() if ln.strip()]
+    if len(lines) <= max_lines:
+        return pipe
+    head = lines[:20]                 # giữ header + vài dòng đầu
+    tail = lines[-(max_lines - 20):]  # ưu tiên phần cuối (thường chứa tổng)
+    return "\n".join(head + ["..."] + tail)
+
+
 # =========================
 # ====== MAIN API =========
 # =========================
@@ -279,6 +306,8 @@ def enhance_table_with_gpt(
 
     # 1) Kiểm tra đầu vào
     pipe_hint = (table_text_cleaned or "").strip()
+    pipe_hint = _truncate_pipe_hint(pipe_hint, max_lines=220)  # [MOD] 2) truncate hint nếu quá dài
+
     if not isinstance(image_pil, Image.Image):
         # Có thể gọi nhầm không đưa ảnh -> fallback
         if log_diag:
@@ -309,7 +338,13 @@ def enhance_table_with_gpt(
         print("[PIPE HINT PREVIEW]\n" + "\n".join(pipe_hint.splitlines()[:6]) + ("\n..." if len(pipe_hint.splitlines()) > 6 else ""))
 
     # 5) Gọi GPT (có retry)
-    client = OpenAI()
+    # [MOD] 4) Fail-safe khi init client lỗi (thiếu API key, network, ...)
+    try:
+        client = OpenAI()  # sẽ đọc OPENAI_API_KEY từ env
+    except Exception as e:
+        if log_diag:
+            print(f"⚠️ OpenAI init error → fallback PIPE gợi ý: {e}")
+        return pipe_hint
 
     def _call():
         return client.chat.completions.create(
@@ -340,3 +375,55 @@ def enhance_table_with_gpt(
         if log_diag:
             print(f"⚠️ OpenAI error → fallback PIPE gợi ý: {e}")
         return pipe_hint
+    
+# ====== COMPAT WRAPPER (giữ API cũ enhance_with_gpt) ======
+def enhance_with_gpt(
+    text_raw: str,
+    meta: Optional[Dict[str, Any]] = None,
+    image_path: Optional[str] = None,
+    *,
+    mode: str = "financial",
+    model: str = DEFAULT_MODEL,
+    temperature: float = DEFAULT_TEMPERATURE,
+    log_diag: bool = False,
+) -> str:
+    """
+    Wrapper để tương thích code cũ:
+    - Nhận text_raw (kỳ vọng là PIPE nếu là bảng), meta (dict), image_path (đường dẫn ảnh)
+    - Mở ảnh → PIL.Image rồi gọi enhance_table_with_gpt(...)
+    - Nếu không có ảnh hoặc không mở được ảnh → fallback text_raw
+    - Nếu text_raw không phải PIPE (không có '|') → để nhẹ nhàng trả lại text_raw
+    """
+    try:
+        # Nếu không có '|' → khả năng không phải bảng PIPE → không ép GPT
+        if "|" not in (text_raw or ""):
+            if log_diag:
+                print("ℹ️ enhance_with_gpt: input không có '|' → trả lại text_raw (không gọi GPT).")
+            return (text_raw or "")
+
+        if image_path:
+            try:
+                img = Image.open(image_path).convert("RGB")
+            except Exception as e:
+                if log_diag:
+                    print(f"⚠️ Không mở được ảnh ({image_path}): {e} → fallback text_raw")
+                return (text_raw or "")
+        else:
+            if log_diag:
+                print("⚠️ Không có image_path → fallback text_raw")
+            return (text_raw or "")
+
+        return enhance_table_with_gpt(
+            table_text_cleaned=(text_raw or ""),
+            image_pil=img,
+            meta=(meta or {}),
+            mode=mode,
+            model=model,
+            temperature=temperature,
+            log_diag=log_diag,
+        )
+    except Exception as e:
+        if log_diag:
+            print(f"⚠️ Wrapper enhance_with_gpt error → fallback: {e}")
+        return (text_raw or "")
+

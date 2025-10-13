@@ -92,12 +92,24 @@ def _run_assistant_safe(client: OpenAI, thread_id: str, assistant_id: str, timeo
                 return "__REQUIRES_ACTION__"
 
             if status in ("failed", "cancelled", "expired"):
-                # Lấy last_error nếu có
-                err = getattr(run_status, "last_error", None) or {}
-                code = err.get("code", status)
-                msg = err.get("message", "Unknown")
-                # Trả về theo format thống nhất để UI bắt & show
+                # Lấy last_error và tách code/message an toàn (object hoặc dict đều OK)
+                err = getattr(run_status, "last_error", None)
+
+                if isinstance(err, dict):
+                    code = err.get("code", status)
+                    msg  = err.get("message", "Unknown")
+                else:
+                    # err có thể là object kiểu LastError
+                    code = getattr(err, "code", None) or status
+                    # message có thể ở thuộc tính .message hoặc args[0], fallback str(err)
+                    msg  = getattr(err, "message", None)
+                    if not msg and getattr(err, "args", None):
+                        msg = err.args[0]
+                    if not msg:
+                        msg = str(err) if err is not None else "Unknown"
+                print(f"[AssistantAPI] ❌ Run {status} | code={code} | msg={msg}")
                 return f"ERROR::{code}::{msg}"
+
 
         if time.time() - start > timeout:
             return "ERROR::timeout::Hết thời gian chờ phản hồi từ Assistant"

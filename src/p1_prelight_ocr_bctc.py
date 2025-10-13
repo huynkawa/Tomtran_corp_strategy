@@ -29,8 +29,8 @@ except Exception:
     convert_from_path = None
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (Windows) =========
-DEFAULT_IN  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy - Copy\inputs\a1_p1_prelight_ocr_bctc_SCAN"
-DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy - Copy\outputs\p1_prelight_ocr_bctc"
+DEFAULT_IN  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a1_p1_prelight_ocr_bctc_SCAN"
+DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1_prelight_ocr_bctc"
 POPPLER_PATH = os.environ.get("POPPLER_PATH", None)  # set nếu cần
 
 # ========= TIỆN ÍCH =========

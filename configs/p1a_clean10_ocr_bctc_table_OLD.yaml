@@ -33,10 +33,10 @@ globals:
       - "Balance sheet"
 
   # --- Padding cho ROI bảng (để giữ dòng tiêu đề cột số) ---
-  roi_pad_top: 120
-  roi_pad_lr: 8
+  roi_pad_top: 120    # code sẽ lấy: yaml_table.globals.roi_pad_top (mặc định 40 nếu thiếu)
+  roi_pad_lr: 8       # chừa lề trái/phải một chút
 
-  # --- Biên cột theo % bề rộng trang (gợi ý khi cần ép cột X%) ---
+  # --- Biên cột theo % bề rộng trang (tuỳ biến) ---
   column_x_percent:
     five_cols:          # CODE | NAME | NOTE | END | BEGIN
       code:  [0.00, 0.09]
@@ -63,21 +63,23 @@ globals:
     "VI.": "VI."
     "VII.": "VII."
 
-  # --- Alias mã số hay bị méo OCR (giữ an toàn) ---
+  # --- Alias mã số hay bị méo OCR ---
   code_aliases:
-    "329-1": "329.1"
-    "329-2": "329.2"
-    "329-3": "329.3"
+    "154":   "151"
+    "161.2": "151.2"
+    "161.1": "151.1"
+    "3291":  "329.1"
+    "3292":  "329.2"
+    "3293":  "329.3"
     "1311":  "131.1"
     "1511":  "151.1"
     "1512":  "151.2"
-    "1.511": "151.1"
-    "1.512": "151.2"
-  # (các alias khác của bạn giữ nguyên)
+    "1411":  "141"
+    "329-1": "329.1"
+    "329-2": "329.2"
+    "329-3": "329.3"
 
-    # ⚠️ Không còn các alias mạo hiểm kiểu "154"->"151", "1411"->"141"
-
-  # --- Alias TÊN (không dấu cũng khớp) ---
+  # --- Alias TÊN (không dấu cũng khớp do code đã bỏ dấu khi so khớp) ---
   name_aliases:
     "Tong tai san": "Tổng tài sản"
     "Nguon von": "Tổng nguồn vốn"
@@ -95,20 +97,22 @@ globals:
     "400": "Vốn chủ sở hữu"
     "440": "Tổng nguồn vốn"
 
-  # --- Cây cha–con theo TÊN ---
+  # --- Cây cha–con theo TÊN (song song rule theo mã) ---
   parent_children_by_name:
     "Tổng tài sản": ["Tài sản ngắn hạn", "Tài sản dài hạn"]
     "Tổng nguồn vốn": ["Nợ phải trả", "Vốn chủ sở hữu"]
 
-  # --- Chuẩn hoá số Việt + vá lỗi OCR phổ biến (an toàn) ---
+  # --- Chuẩn hoá số Việt + vá lỗi OCR phổ biến ---
   number_cleanup:
-    drop_chars: ["\u00A0", "\t", "£", "¥", "₫"]
+    drop_chars: [" ", "\u00A0", "\t", "£", "¥", "₫"]
     fix_patterns:
-      - {from: "(?<=\\d)\\s+(?=\\d)", to: ""}                 # xoá space giữa chữ số
-      - {from: "[\\.,]{2,}", to: "."}                         # chấm/phẩy lặp
-      - {from: "(?<!\\d)[ZIlO](?=\\d)", to: ""}               # ký tự nhiễu đầu số
-      - {from: "(?<=\\d),(?=\\d{3}(\\D|$))", to: "."}         # 1,234 → 1.234
-      - {from: "\\((\\d[\\d\\.,]*)\\)", to: "-\\1"}           # (1.234) → -1.234
+      - {from: "([0-9]),([0-9]{3})(?![0-9])", to: "\\1.\\2"}           # 1,234 → 1.234
+      - {from: "(\\d)\\.(\\d{1,2})\\.(\\d{3})(\\.|$)", to: "\\1\\2.\\3\\4"} # 150.9417,655,.545 → 1509417.655.545
+      - {from: "(?<=\\d)\\s+(?=\\d)", to: ""}                           # xoá khoảng trắng giữa số
+      - {from: "[\\.,]{2,}", to: "."}                                   # chấm/phẩy lặp
+      - {from: "(?<=[^\\d])[ZIlO](?=\\d)", to: ""}                      # ký tự lẫn vào số
+      - {from: "(?<=\\d),(?=\\d{3}(\\D|$))", to: "."}                   # 1,234 → 1.234
+      - {from: "\\((\\d[\\d\\.,]*)\\)", to: "-\\1"}                     # (1.234) → -1.234
     thousand_grouping: true
 
   # --- Policy tự sửa khi validator thấy lệch ---
@@ -116,43 +120,36 @@ globals:
     fix_parent_from_children: true
     fix_minor_digit_off_by: true
     fix_leading_extra_digit: true
-    clamp_negative_where_forbidden: false   # để soft_checks quyết định nơi được âm
+    clamp_negative_where_forbidden: true
 
-  # --- Lọc rác header/caption (nới, tránh xoá nhầm mục hợp lệ) ---
+  # --- Lọc rác header/caption (code sẽ bỏ dấu trước khi đối chiếu) ---
   drop_if_name_contains:
     - "bảng cân đối kế toán"
     - "mẫu số"
     - "ban hành theo"
     - "đơn vị tính"
+    - "đơn vị"
     - "as at"
     - "as of"
     - "for the year ended"
     - "b01-dnpnt"
     - "b01-dn"
     - "bctc"
-    - "trang "
+    - "tại ngày"
+    - "vnd"
+    - "số cuối năm"
+    - "số đầu năm"
+    - "tài sản"
+    - "nguồn vốn"
 
-  # --- Synonyms cho tiêu đề cột ---
-  synonyms:
-    end:   ["Số cuối năm","Năm nay","Current year"]
-    begin: ["Số đầu năm","Năm trước","Prior year"]
-    note:  ["Thuyết minh","TM","Ghi chú","Notes"]
-
-  # --- Profile layout → map về schema logic (không ép 5 cột vật lý) ---
-  layouts:
-    L5:  {column_map: {code: 0, name: 1, note: 2, end: 3, begin: 4}}
-    L4:  {column_map: {code: 0, name: 1, end: 2, begin: 3}, fill_missing: {note: null}}
-    L3A: {column_map: {name: 0, end: 1, begin: 2}, infer_code_from_name: true}
-    L3B: {column_map: {code: 0, name: 1, end: 2}, fill_missing: {begin: null, note: null}, assume_single_amount_is: "END"}
-
-  # --- Công thức cross-check cho cả trang ---
+  # --- Công thức cross-check cho cả trang (code đọc từ globals.cross_formulas) ---
   cross_formulas:
     - name: "Tài sản dài hạn"
       end:   "200 = 210 + 220 + 250 + 260"
-      begin: "200 = 210 + 220 + 250 + 260"   # (đã sửa start -> begin)
+      start: "200 = 210 + 220 + 250 + 260"
     - name: "Tổng tài sản"
       end:   "270 = 100 + 200"
-      begin: "270 = 100 + 200"
+      start: "270 = 100 + 200"
 
   # --- Cho phép override theo công ty (tuỳ chọn) ---
   company_overrides: {}
@@ -186,7 +183,6 @@ balance_sheet:
         - 270
       rules:
         - eq: ["110", ["111","112"]]
-        - eq: ["120", ["121","122","123"]]
         - eq: ["130", ["131","131.1","131.2","132","133","134","135","136","137","138","-139"]]
         - eq: ["140", ["141"]]
         - eq: ["151", ["151.1","151.2"]]

@@ -1,75 +1,131 @@
-# ========= LOGO & TIÊU ĐỀ =========
+# ================================
+# UI CONFIG (TẤT CẢ Ở YAML)
+# ================================
 
-LOGO_IS_VIDEO: true                # vẫn là video
-LOGO_BORDER_RADIUS_PX: 0           # 0 = không bo tròn (hết hình tròn)
-LOGO_OBJECT_FIT: "contain"         # tránh bị cắt; "cover" = cắt cho đủ khung
-LOGO_SHADOW: false                 # tắt đổ bóng viền xanh
+META:
+  VERSION: 1.0
+  NOTES: "Chỉnh mọi thứ ở YAML; code chỉ đọc & render."   # Mô tả: cấu hình tập trung ở YAML
 
+CENTER_AXIS:                        # (1) TRỤC TRUNG TÂM TOÀN TRANG
+  ENABLED: true                     # Bật/tắt cơ chế neo theo trục trung tâm
+  MODE: viewport                    # viewport=theo màn hình; container=theo khung trung tâm
+  X_PCT: 50                         # (X) 0..100: 50 là chính giữa ngang
+  Y_PCT: 50                         # (Y) 0..100: 50 là chính giữa dọc
+  SNAP_TO_GRID: false               # Bật thì neo các đối tượng theo lưới
+  GRID_STEP_PX: 8                   # Bước lưới (px) khi SNAP_TO_GRID=true
 
-TITLE_FONT_SIZE_REM: 2.2                       # tăng: chữ tiêu đề to hơn
-LOGO_SIZE_PX: 70                               # tăng: logo to hơn (dễ bị “sát mép” nếu quá lớn)
-LOGO_OFFSET_REM: 0                             # tăng dương: header/ logo hạ xuống; âm: kéo lên
+COLORS:                             # (2) MÀU NỀN & CHỮ CHÍNH
+  BG:   "#FFFFFF"                   # Nền tổng thể app
+  TEXT: "#0B1520"                   # Màu chữ mặc định
+  CARD: "#FFFFFF"                   # Nền thẻ/vùng nội dung (chat panel, card)
+  LINE: "#E5E7EB"                   # Màu đường kẻ/đường phân cách
 
-# ========= BANNER DƯỚI HEADER (thay cho đường kẻ) =========
-HEADER_DIVIDER_MODE: "text"                    # "text"=hiện banner chữ + 2 vạch; "line"=chỉ kẻ
-HEADER_DIVIDER_TEXT: "Hãy hỏi tôi về chiến lược hay bất cứ điều gì"
+TYPOGRAPHY:
+  BASE_SIZE_PX: 15                  # Cỡ chữ cơ sở (ảnh hưởng rem)
+  TITLE_SIZE_PX: 20                 # Cỡ chữ tiêu đề chính (px)
+  FONT_FAMILY: "Inter, Roboto, system-ui, -apple-system, Segoe UI, Arial"  # Font stack
 
-# nội dung banner; để trống = không hiện chữ (chỉ còn 2 vạch)
-HEADER_DIVIDER_TOP_REM: 0.8                    # tăng: banner hạ thấp xuống xa logo hơn
-HEADER_DIVIDER_BOTTOM_REM: 0.35                # tăng: nới khoảng trống bên dưới banner
-HEADER_DIVIDER_WIDTH_PCT: 82                   # tăng: banner (cả cụm) rộng hơn; giảm: hẹp lại
-HEADER_DIVIDER_THICK_PX: 1                     # tăng: vạch hai bên dày hơn
-HEADER_DIVIDER_STYLE: solid                    # solid | dashed | dotted → kiểu vạch
-HEADER_DIVIDER_COLOR: "#3a3f4b"                # đổi màu vạch hai bên
-## Chữ ở giữa
-HEADER_DIVIDER_TEXT_COLOR: "#bfbfbf"           # tăng sáng hơn (gần #fff) = chữ sáng hơn
-HEADER_DIVIDER_TEXT_SIZE_REM: 0.95             # tăng: chữ banner lớn hơn
-HEADER_DIVIDER_TEXT_WEIGHT: 600                # tăng: chữ đậm hơn (400=normal, 700=bold)
+LAYOUT:                             # (3) BỐ CỤC CHÍNH & ĐƯỜNG KẺ NGĂN
+  MAIN_MAX_WIDTH_PCT: 96            # Bề rộng tối đa khối trung tâm (% viewport) – ảnh hưởng căn giữa ngang
+  GUTTER_PX: 0                      # Khoảng cách rãnh hai bên (px)
+  SIDEBAR_WIDTH_PCT: 30             # Bề rộng sidebar (% khối trung tâm)
+  CHAT_WIDTH_PCT: 82                # Bề rộng cột chat (% khối trung tâm)
+  DIVIDER:
+    SHOW: true                      # Hiện/ẩn đường kẻ ngăn khu (ví dụ giữa sidebar và chat)
+    COLOR: "#E5E7EB"                # Màu đường kẻ
+    STYLE: "solid"                  # Kiểu đường: solid | dashed | dotted
+    WIDTH_PX: 1                     # Độ dày đường kẻ (px)
+    OFFSET_X_PX: 0                  # (X) Dịch đường kẻ trái/→ phải (px)
 
+OBJECTS:                            # (4,5) TỪNG ĐỐI TƯỢNG + DỊCH CHUYỂN/STYLE RIÊNG
+  SIDEBAR:
+    ENABLED: true                   # Bật/tắt sidebar
+    OFFSET_X: "-28%"                # (X) Dịch sidebar trái/→ phải (âm = sang trái)
+    OFFSET_Y: "0px"                 # (Y) Dịch sidebar lên/↓ xuống
+    BG: "#0F172A"                   # Nền sidebar
+    TEXT: "#E2E8F0"                 # Màu chữ sidebar
+    BORDER_COLOR: "#0F172A"         # Màu viền sidebar
+    BORDER_PX: 0                    # Độ dày viền sidebar (px)
+    RADIUS_PX: 18                   # Bo góc sidebar (px)
+    SHADOW: true                    # Đổ bóng sidebar
+    PADDING_PX: 10                  # Đệm trong sidebar (px)
 
-# ========= KÍCH THƯỚC & BỐ CỤC =========
-HEADER_TO_CHAT_GAP_REM: -2.0                   # tăng âm: kéo khối chat lên gần banner; tăng dương: đẩy xuống
-CHAT_HEIGHT_VH_EMPTY: 15                       # tăng: khung chat (khi trống) cao hơn
-CHAT_HEIGHT_VH_NONEMPTY: 15                    # tăng: khung chat (khi có tin) cao hơn
-CHAT_PAD_V_REM: 1.1                            # tăng: đệm trên/dưới bên trong khung chat dày hơn
-CHAT_PAD_H_REM: 1.6                            # tăng: đệm trái/phải bên trong khung chat dày hơn
+  CHAT_PANEL:
+    ENABLED: true                   # Bật/tắt khu vực chat (lịch sử + nội dung)
+    OFFSET_X: "22%"                 # (X) Dịch chat panel trái/→ phải (dương = sang phải)
+    OFFSET_Y: "0px"                 # (Y) Dịch chat panel lên/↓ xuống
+    BG: "#FFFFFF"                   # Nền khối chat
+    TEXT: "#0B1520"                 # Màu chữ trong khối chat
+    BORDER_COLOR: "#FFFFFF"         # Màu viền khối chat
+    BORDER_PX: 0                    # Độ dày viền khối chat (px)
+    RADIUS_PX: 0                    # Bo góc khối chat (px)
+    SHADOW: false                   # Đổ bóng khối chat
+    PADDING_PX: 0                   # Đệm trong khối chat (px)
+    CHAT_MAX_WIDTH_PX: 760          # Bề rộng cột giữa “giống ChatGPT” (px)
+    CHAT_HEIGHT_VH_DESKTOP: 72      # (Y) Chiều cao khối chat trên desktop (% chiều cao màn hình)
+    CHAT_HEIGHT_VH_MOBILE: 68       # (Y) Chiều cao khối chat trên mobile (% chiều cao màn hình)
 
-CHAT_WIDTH_DESKTOP_PX: 820                     # tăng: khung chat rộng hơn trên desktop
-CHAT_WIDTH_TABLET_PX: 680                      # tăng: rộng hơn trên tablet
-CHAT_WIDTH_MOBILE_PCT: 92                      # tăng: rộng hơn trên mobile (% theo màn hình)
+  CHAT_INPUT:
+    ENABLED: true                   # Bật/tắt ô nhập chat
+    WIDTH_PCT: 100                  # Bề rộng ô nhập (% theo CHAT_MAX_WIDTH_PX hoặc container)
+    OFFSET_X: "0px"                 # (X) Dịch ô nhập trái/→ phải
+    OFFSET_Y: "0px"                 # (Y) Dịch ô nhập lên/↓ xuống (âm = kéo lên gần giữa)
+    BG: "#F7F7F8"                   # Nền ô nhập (xám rất nhạt kiểu ChatGPT)
+    BORDER_COLOR: "#E5E7EB"         # Màu viền ô nhập (xám trung tính)
+    BORDER_PX: 1                    # Độ dày viền ô nhập (px)
+    RADIUS_PX: 999                  # Bo “pill” cho ô nhập (999 = tròn mạnh)
+    STICKY_BOTTOM_PX: 20            # Dính đáy: cách đáy 20px; 0 = không sticky (ô nhập sẽ “lên” theo OFFSET_Y)
 
-INPUT_MARGIN_TOP_REM: -1.5                     # tăng âm: ô nhập kéo lên gần khung chat; tăng dương: đẩy xuống
-LEFT_SIDEBAR_WIDTH_PX: 290                     # tăng: sidebar trái rộng hơn
+  BUBBLE_USER:
+    ENABLED: true                   # Bật/tắt bong bóng USER
+    BG: "#E5F1FF"                   # Nền bong bóng USER (xanh nhạt)
+    TEXT: "#0B1520"                 # Màu chữ USER
+    BORDER_COLOR: "#DCEBFF"         # Màu viền bong bóng USER
+    BORDER_PX: 1                    # Độ dày viền USER (px)
+    RADIUS_PX: 18                   # Bo góc bong bóng USER (px)
 
-# ========= STRAP (dòng giữa) =========
-SHOW_STRAP: true                                # false=ẩn strap
-STRAP_ICON: "🧭"                                 # chỉ đổi biểu tượng
-STRAP_TEXT: "The Best Strategy Assistant of Tom Tran"  # tăng độ dài: có thể xuống dòng nếu quá dài
-FOOTER_STRAP_TOP_MARG_REM: 0.10   # khoảng cách strap với phần trên (↑ tăng = xa hơn)
-# ========= FOOTER =========
-SHOW_FOOTER: false                               # false=ẩn footer
-FOOTER_TITLE: "© TOMTRAN Chatbot"               # nội dung hàng 1
-FOOTER_TAGLINE: "Strategic insight & business intelligence."  # nội dung hàng 2
-FOOTER_COPYRIGHT: "© 2025 Tom Tran Corporation. All rights reserved."  # nội dung hàng 3
-FOOTER_BRAND_TOP_MARG_REM: 0.35                 # tăng: footer cách strap xa hơn
+  BUBBLE_BOT:
+    ENABLED: true                   # Bật/tắt bong bóng BOT
+    BG: "#FFFFFF"                   # Nền bong bóng BOT
+    TEXT: "#0B1520"                 # Màu chữ BOT
+    BORDER_COLOR: "#E5E7EB"         # Màu viền bong bóng BOT (xám nhạt)
+    BORDER_PX: 1                    # Độ dày viền BOT (px)
+    RADIUS_PX: 18                   # Bo góc bong bóng BOT (px)
 
-# ========= THEME =========
-THEME_BASE: "light"          # "light" hoặc "dark"
-
-# Màu nền & chữ (Light)
-BG_COLOR:   "#FFFFFF"        # nền trang
-CARD_COLOR: "#F7F7F9"        # nền thẻ/sidebar/bong bóng bot
-LINE_COLOR: "#E5E7EB"        # đường kẻ
-TEXT_COLOR: "#111827"        # màu chữ chính
-
-# Bong bóng chat
-BUBBLE_USER_BG: "#E5F1FF"    # bong bóng user (xanh nhạt)
-BUBBLE_BOT_BG:  "#F3F4F6"    # bong bóng bot (xám rất nhạt)
-
-# Ô nhập
-INPUT_BG:   "#FFFFFF"
-INPUT_TEXT: "#111827"
-
-# Prompt gợi ý
-PROMPT_TEXT: "#111827"       # (nếu bạn đang set PROMPT_TEXT trong code)
-
+COMPONENTS:                         # BẬT/TẮT THÀNH PHẦN & NỘI DUNG
+  HIDE_STREAMLIT_CHROME: true       # Ẩn menu/header/footer mặc định của Streamlit
+  EMPTY_STATE:
+    SHOW: true                      # Hiện màn hình rỗng ban đầu
+    TITLE_HTML: "Tôi có thể giúp được gì, huy?"   # Tiêu đề trạng thái rỗng
+    SUB_HTML: "Hỏi bất kỳ điều gì…"             # Phụ đề trạng thái rỗng
+  SIDEBAR_CONTENT:
+    SHOW: true                      # Hiện nội dung sidebar demo
+    HEADER: "Sidebar"               # Tiêu đề khu sidebar demo
+    ITEMS:                          # Danh sách control demo (đã chuyển YAML hợp lệ)
+      - type: slider
+        label: "Temperature"
+        min: 0.0
+        max: 1.0
+        step: 0.05
+        value: 0.3
+      - type: slider
+        label: "Top-p"
+        min: 0.1
+        max: 1.0
+        step: 0.05
+        value: 1.0
+      - type: toggle
+        label: "Fallback"
+        value: true
+      - type: number
+        label: "Retriever k"
+        min: 1
+        max: 20
+        step: 1
+        value: 6
+      - type: slider
+        label: "Min relevance"
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        value: 0.25

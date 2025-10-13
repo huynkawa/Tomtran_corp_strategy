@@ -422,7 +422,6 @@ def _looks_like_5col_header(words: List[str]) -> bool:
     return hit >= 3  # nới lỏng: 3/5 token là coi như header 5 cột
 
 _NUM_RE = re.compile(r"^-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*$")
-
 def _is_num_cell(s: str) -> bool:
     s = (s or "").strip()
     if not s: return False
@@ -462,9 +461,39 @@ _RE_CODE = re.compile(r"^\d{3}(?:\.\d+)?$")                # 100, 151.1 ...
 _RE_NOTE = re.compile(r"^\d+(?:\([a-z]\))?$", re.I)        # 4  | 5.2 | 15.1 | 7(a)
 _RE_AMT1 = re.compile(r"^-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*$")  # 1.234.567 | (2.345)
 _RE_AMT2 = re.compile(r"^-?\d{4,}$")                       # 12345
+# Giá trị placeholder cho ô rỗng để không bị “co” cột khi đọc
+NULL_TOKEN = "None"
+
 def _is_amount_cell(s: str) -> bool:
     s = (s or "").strip().replace(" ", "")
     return bool(_RE_AMT1.fullmatch(s)) or bool(_RE_AMT2.fullmatch(s))
+
+_AMT_GRP = re.compile(r"(-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*|-?\d{4,})")
+
+def _split_two_amounts_in_cell(cells: List[str]) -> List[str]:
+    """
+    Nếu ô bên phải đang chứa đồng thời 2 số tiền (END và BEGIN) dính nhau,
+    ví dụ: '15.057.409.157 55.847.772.902' → tách thành 2 ô riêng.
+    Ưu tiên tách ở cell phải nhất chưa phải là cột số chuẩn.
+    """
+    if not cells:
+        return cells
+
+    # duyệt từ phải sang trái, tìm cell có >=2 nhóm 'số tiền'
+    for j in range(len(cells) - 1, -1, -1):
+        raw = (cells[j] or "").strip()
+        if not raw or "|" in raw:
+            continue
+        hits = _AMT_GRP.findall(raw.replace(",", "."))
+        if len(hits) >= 2:
+            # lấy 2 số cuối làm (END, BEGIN)
+            endv = normalize_vn_amount(hits[-2])
+            begv = normalize_vn_amount(hits[-1])
+            # phần text còn lại (nếu có) bỏ đi để tránh nhiễu
+            cells = cells[:j] + [endv, begv] + cells[j+1:]
+            break
+    return cells
+
 
 def _is_code_cell(s: str) -> bool:
     return bool(_RE_CODE.fullmatch((s or "").strip()))
@@ -602,10 +631,158 @@ def pipe_to_flex_schema(pipe_text: str) -> Dict[str, Any]:
     return {"header": header, "rows": out_rows, "indices": idx}
 
 
+def _repack_pipe_by_inferred_schema(pipe_text: str,
+                                    *,
+                                    fill_note_with_none: bool = True,
+                                    force_five_when_fin_like: bool = True) -> str:
+    """
+    Dựng lại bảng 5 cột chuẩn tài chính (CODE | NAME | Thuyết minh | Số cuối năm | Số đầu năm)
+    dựa trên auto-schema đã suy luận. Chỉ điền 'None' cho cột NOTE (nếu trống).
+    Các cột tiền nếu trống thì để rỗng "" (không ghi None).
+
+    - Không mang theo các cột text dư ở giữa; chỉ dùng đúng CODE/NAME/NOTE + END/BEGIN
+    - Không lặp lại CODE|NAME lần 2.
+    """
+    if not pipe_text or not pipe_text.strip():
+        return pipe_text
+
+    model = pipe_to_flex_schema(pipe_text)
+    rows  = model.get("rows") or []
+
+    # Nếu bảng không có "dáng" VAS/financial thì trả nguyên
+    s0 = (pipe_text.splitlines() or [""])[0].lower()
+    looks_fin = ("mã số" in s0 or "ma so" in s0) or ("thuyết minh" in s0 or "thuyet minh" in s0) \
+                or ("số cuối năm" in s0 or "so cuoi nam" in s0) or ("số đầu năm" in s0 or "so dau nam" in s0)
+    if force_five_when_fin_like and not looks_fin and not rows:
+        return pipe_text
+
+    header = ["CODE", "NAME", "Thuyết minh", "Số cuối năm", "Số đầu năm"]
+    out = [" | ".join(header)]
+
+    for r in rows:
+        code  = (r.get("CODE") or "").strip()
+        name  = (r.get("NAME") or "").strip()
+        note  = (r.get("NOTE") or "").strip()
+        endv  = (r.get("END")  or "").strip()
+        begv  = (r.get("BEGIN") or "").strip()
+
+        # Chỉ NOTE mới được điền 'None' khi trống
+        if not note and fill_note_with_none:
+            note = "None"
+
+        # Không cho cột tiền thành 'None'
+        if endv.lower() == "none":  endv = ""
+        if begv.lower() == "none":  begv = ""
+
+        out.append(" | ".join([code, name, note, endv, begv]))
+
+    # Nếu không thu được dòng nào từ auto-schema → trả nguyên
+    return "\n".join(out) if len(out) > 1 else pipe_text
+
+
+
+
+def _repack_pipe_by_inferred_schema(pipe_text: str) -> str:
+    """
+    Dựa trên pipe_to_flex_schema:
+    - Nếu nhận diện được bảng tài chính (có CODE và >=1 cột tiền), rebuild về:
+        CODE | NAME | NOTE? | END | BEGIN
+      (NOTE chỉ có khi ít nhất một dòng có NOTE khác rỗng)
+    - Nếu KHÔNG nhận diện được (bảng generic) → giữ nguyên pipe gốc.
+    - Loại bỏ hoàn toàn các dòng rỗng hoặc chỉ có '|' / '\' rác.
+    """
+    model = pipe_to_flex_schema(pipe_text or "")
+    rows = model.get("rows") or []
+    idx  = model.get("indices") or {}
+
+    # Không phải bảng tài chính → trả nguyên
+    has_code = idx.get("code") is not None
+    amt_cols = idx.get("amount_cols") or []
+    if not rows or not has_code or not amt_cols:
+        # dọn rác nhẹ: bỏ dòng chỉ chứa dấu | hoặc '\' 
+        clean_lines = []
+        for ln in (pipe_text or "").splitlines():
+            t = (ln or "").strip()
+            if not t or re.fullmatch(r"[|\\\s]+", t):
+                continue
+            clean_lines.append(ln)
+        return "\n".join(clean_lines)
+
+    need_note = any((r.get("NOTE") or "").strip() for r in rows)
+    header = ["CODE", "NAME"]
+    if need_note: header.append("Thuyết minh")
+    header += ["Số cuối năm", "Số đầu năm"]
+
+    out_lines = [" | ".join(header)]
+    for r in rows:
+        code  = (r.get("CODE") or "").strip() or NULL_TOKEN
+        name  = (r.get("NAME") or "").strip() or NULL_TOKEN
+        note  = (r.get("NOTE") or "").strip() or NULL_TOKEN
+        endv  = (r.get("END")  or "").strip() or NULL_TOKEN
+        begv  = (r.get("BEGIN")or "").strip() or NULL_TOKEN
+
+        if need_note:
+            cells = [code, name, note, endv, begv]
+        else:
+            cells = [code, name, endv, begv]
+        out_lines.append(" | ".join(cells))
+
+    return "\n".join(out_lines)
+
+
+
 
 def _pad_to_k(cells: List[str], k: int) -> List[str]:
-    if len(cells) < k: return cells + [""]*(k-len(cells))
-    return cells[:k]
+    """Bảo đảm đúng k cột; mọi ô trống → NULL_TOKEN."""
+    out = (cells or [])[:k] + ["" for _ in range(max(0, k - len(cells or [])))]
+    return [ (c if (c is not None and str(c).strip() != "") else NULL_TOKEN) for c in out ]
+
+
+def _auto_insert_virtual_note_col(pipe_text: str) -> str:
+    """
+    Dựa trên suy luận cột (pipe_to_flex_schema):
+    - Nếu có CODE + NAME + ≥1 amount_col và KHÔNG tìm ra cột NOTE riêng,
+      chèn 1 cột 'NOTE' rỗng ngay trước cột tiền đầu tiên.
+    - Không đụng vào bảng generic (không có CODE) → giữ nguyên.
+    """
+    if not pipe_text.strip():
+        return pipe_text
+    header = (pipe_text.splitlines() or [""])[0]
+    body   = (pipe_text.splitlines() or [])[1:]
+    if not body:
+        return pipe_text
+
+    model = pipe_to_flex_schema(pipe_text)
+    idx   = model.get("indices") or {}
+    code_col = idx.get("code")
+    name_col = idx.get("name")
+    note_col = idx.get("note")
+    amt_cols = idx.get("amount_cols") or []
+
+    # điều kiện chèn NOTE ảo
+    if code_col is None or name_col is None or note_col is not None or not amt_cols:
+        return pipe_text
+
+    insert_at = min(amt_cols)  # vị trí cột tiền đầu tiên
+    new_lines = []
+
+    # header: đổi nhãn cho đẹp (tuỳ ý)
+    h_cells = [c.strip() for c in header.split("|")]
+    if len(h_cells) < insert_at+1:
+        # header pipe dạng C1|C2... -> cứ chèn thêm 1 nhãn
+        h_cells = h_cells + [""] * (insert_at+1-len(h_cells))
+    h_cells.insert(insert_at, "Thuyết minh")
+    new_lines.append(" | ".join(h_cells))
+
+    # body
+    for ln in body:
+        cells = [c.strip() for c in ln.split("|")]
+        if len(cells) < insert_at:
+            cells = cells + [""] * (insert_at-len(cells))
+        cells.insert(insert_at, "")   # chèn NOTE rỗng
+        new_lines.append(" | ".join(cells))
+
+    return "\n".join(new_lines)
 
 # ==== hàm “vá” hàng bị tách đôi text & chuẩn hóa số cột
 
@@ -940,12 +1117,6 @@ def normalize_vn_amount(s: str) -> str:
 
 
 def _normalize_all_amounts_in_pipe(pipe_text: str) -> str:
-    """
-    Chuẩn hoá các ô số tiền trong bảng pipe:
-    - Tìm các cột 'trông như số tiền' ở MỖI DÒNG.
-    - Chỉ chuẩn hoá 2 cột số bên phải (END/BEGIN) nếu tồn tại; nếu chỉ có 1 thì chuẩn hoá 1.
-    - Vá trường hợp dính 1 chữ số thừa ở đầu (vd '7150.941.655.545' -> '150.941.655.545').
-    """
     s = (pipe_text or "")
     if not s.strip():
         return s
@@ -953,31 +1124,118 @@ def _normalize_all_amounts_in_pipe(pipe_text: str) -> str:
     out_lines = []
     for ln in s.splitlines():
         parts = [p.strip() for p in ln.split("|")]
-        if len(parts) == 0:
+        if not parts:
             continue
 
-        # tìm các ô là số tiền
+        # Là "ô tiền"?
         def _is_amt_cell(x: str) -> bool:
             t = (x or "").strip().replace(" ", "")
             return bool(re.fullmatch(r"-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*$", t)) or \
                    bool(re.fullmatch(r"-?\d{4,}$", t))
 
+        # Bỏ token thuyết minh dính phía trước số (vd "5.2 1.107...")
+        def _strip_leading_note_token(x: str) -> str:
+            return re.sub(r"^\s*\d+(?:\([a-z]\))?\s+(?=-?\(?\d)", "", x.strip(), flags=re.I)
+
+        # các ô là số
         amt_idxs = [i for i, v in enumerate(parts) if _is_amt_cell(v)]
 
-        # chỉ chuẩn hoá 2 ô số bên phải nhất
+        # chỉ chuẩn hóa 2 ô số bên phải nhất
         for j in amt_idxs[-2:]:
-            raw = parts[j]
+            raw = _strip_leading_note_token(parts[j])
+            raw_flat = raw.replace(",", ".").replace(" ", "")
+
             norm = normalize_vn_amount(raw)
 
-            # vá: nếu đầu chuỗi có thừa 1 ký tự số → thử bỏ 1 ký tự đầu
-            if not norm and re.match(r"^[1-9]\d?\d?\.\d{3}\.", raw.replace(",", ".")):
-                norm = normalize_vn_amount(raw[1:])
+            # Vá trường hợp thừa 1 chữ số đứng trước block số
+            if not norm:
+                if re.match(r"^[1-9]\d{4}\.", raw_flat):           # 6 + 7150...
+                    norm = normalize_vn_amount(raw_flat[1:])
+                elif re.match(r"^[1-9]\.\d{4}\.", raw_flat):        # 6.7150...
+                    norm = normalize_vn_amount(raw_flat[2:])
+                elif re.match(r"^[1-9]\d?\d?\.\d{3}\.", raw_flat):  # 61 150.941...
+                    norm = normalize_vn_amount(raw_flat[1:])
 
-            parts[j] = norm or raw
+            parts[j] = (norm or raw or "")
+
 
         out_lines.append(" | ".join(parts))
 
     return "\n".join(out_lines)
+
+
+def _extract_inline_note_and_insert_col(pipe_text: str) -> str:
+    """
+    Nếu trong NAME có đuôi thuyết minh như '... 4', '... 5.2', '... 15.1(a)' thì
+    tách nó ra thành 1 ô NOTE và CHÈN ngay trước cột tiền đầu tiên của chính dòng đó.
+    Hàm này chỉ tác động trên từng dòng; không ép tăng K toàn bảng.
+    """
+    s = (pipe_text or "").strip()
+    if not s: 
+        return s
+
+    lines = [ln for ln in s.splitlines() if ln.strip()]
+    if not lines: 
+        return s
+    header, body = lines[0], lines[1:]
+
+    def _is_amt(x):
+        t = (x or "").replace(" ", "")
+        return bool(re.fullmatch(r"-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*$", t)) or bool(re.fullmatch(r"-?\d{4,}$", t))
+    def _is_code(x):
+        return bool(re.fullmatch(r"\d{3}(?:\.\d+)?", (x or "").strip()))
+
+    out = []
+    for ln in body:
+        parts = [p.strip() for p in ln.split("|")]
+        if not parts:
+            continue
+
+        # cột tiền đầu tiên
+        amt_idxs = [i for i,p in enumerate(parts) if _is_amt(p)]
+        if not amt_idxs:
+            out.append(" | ".join(parts))
+            continue
+        k0 = amt_idxs[0]
+
+        # cần có CODE ở bên trái
+        if not any(_is_code(p) for p in parts[:min(k0,3)]):
+            out.append(" | ".join(parts))
+            continue
+
+        # ghép NAME (mọi thứ giữa CODE và cột tiền đầu)
+        left = parts[:k0]
+        code = left[0] if left else ""
+        name = " ".join(left[1:]).strip()
+        note = ""
+
+        # bắt NOTE ở CUỐI tên
+        m = re.search(r"(.*?)(\d+(?:\.\d+)?(?:\([a-z]\))?)\s*$", name, flags=re.I)
+        if m:
+            note = m.group(2).strip()
+            name = m.group(1).strip()
+
+        if not note:
+            out.append(" | ".join(parts))
+            continue
+
+        # chèn NOTE ngay trước cột tiền đầu tiên (không thêm cột mới ở bên phải)
+        new_cells = [code, name, note] + parts[k0:]
+        # giữ placeholder trong cột HIỆN HỮU
+        new_cells = [(c if str(c).strip() != "" else NULL_TOKEN) for c in new_cells]
+        out.append(" | ".join(new_cells))
+
+    # Header: chỉ chèn nhãn nếu chưa có
+    h = [c.strip() for c in header.split("|")]
+    if not any("uyết" in x.lower() or "note" in x.lower() for x in h):
+        # chèn sau cột thứ hai (CODE|NAME|NOTE|…)
+        if len(h) < 2:
+            h += [""] * (2 - len(h))
+        h.insert(2, "Thuyết minh")
+        header = " | ".join(h)
+
+    return "\n".join([header] + out)
+
 
 
 def _ocr_crop_number(bgr: np.ndarray, box_xyxy: Tuple[int,int,int,int], lang: str = OCR_LANG_DEFAULT) -> str:
@@ -1070,6 +1328,10 @@ def _prefilter_table_lines(pipe_text: str, yaml_table: dict) -> str:
     drop_tokens = set([t.lower() for t in conf_drop]) | set(_DROP_NAME_CONTAINS_DEFAULT)
     out = []
     for i, ln in enumerate(lines):
+        # bỏ hẳn các dòng chỉ có ký tự phân cách rác
+        if re.fullmatch(r"[|\\\s]+", ln):
+            continue
+
         parts = [p.strip() for p in ln.split("|")]
         if len(parts) < 2:
             continue
@@ -1082,8 +1344,38 @@ def _prefilter_table_lines(pipe_text: str, yaml_table: dict) -> str:
             continue
         out.append(ln)
 
-
     return "\n".join(out)
+
+def _trim_to_table_body(pipe_text: str) -> str:
+    """
+    Bỏ mọi dòng trước 'thân bảng': dòng đầu có mã 3 số và có ≥1 cột tiền ở bên phải.
+    Dùng cho trang MIXED để không kéo caption/header vào bảng.
+    """
+    if not pipe_text.strip():
+        return pipe_text
+    lines = [ln for ln in pipe_text.splitlines() if ln.strip()]
+    if not lines:
+        return pipe_text
+
+    def _is_amt(x): 
+        t=(x or "").replace(" ","")
+        return bool(re.fullmatch(r"-?\(?\d{1,3}(?:[.,]\d{3})+(?:\)?)*$", t)) or bool(re.fullmatch(r"-?\d{4,}$", t))
+    def _is_code(x): 
+        return bool(re.fullmatch(r"\d{3}(?:\.\d+)?", (x or "").strip()))
+
+    start = 1  # bỏ header "C1|C2|..."
+    for i in range(1, len(lines)):
+        parts = [p.strip() for p in lines[i].split("|")]
+        if not parts: 
+            continue
+        has_code = any(_is_code(p) for p in parts[:3])  # thường nằm bên trái
+        amt_idxs = [j for j,p in enumerate(parts) if _is_amt(p)]
+        if has_code and amt_idxs:
+            start = i
+            break
+
+    keep = [lines[0]] + lines[start:]
+    return "\n".join(keep)
 
 def _looks_like_vas_5col(pipe_text: str) -> bool:
     """Nhận dạng header VAS có 'Mã số' / 'Thuyết minh' / 'Số cuối năm' / 'Số đầu năm'."""
@@ -1124,9 +1416,6 @@ def _enforce_fin_5cols_if_header_missing(pipe_text: str) -> str:
             parts = parts + [""] * (5 - len(parts))
         fixed.append(" | ".join(parts))
     return "\n".join(fixed)
-
-
-
 
 
 
@@ -1452,10 +1741,20 @@ def build_table_tsv(pil: Image.Image, y_tol: int, ocr_lang: str) -> Tuple[str, D
             s = _norm_word(str(t["text"]))
             if s: buckets[int(t["col_id"])].append(s)
 
+  
         cells = [" ".join(buckets[cid]).strip() for cid in sorted(buckets.keys())]
-        # Ghép “text bị tách đôi” trước 2 cột số phải
+
+        # 1) ghép text bị tách đôi trước 2 cột số phải
         cells = _merge_adjacent_text_columns(cells, want_k_global)
+
+        # 2) tách trường hợp 2 số tiền dính trong 1 cell → (END, BEGIN)
+        cells = _split_two_amounts_in_cell(cells)
+
         var_rows.append(cells)
+
+
+
+
         max_cols_seen = max(max_cols_seen, len(cells))
 
     # Nếu đã ưu tiên header 5 cột và max<5 nhưng vẫn có 2 cột số bên phải ⇒ đẩy max lên 5
@@ -1474,8 +1773,7 @@ def build_table_tsv(pil: Image.Image, y_tol: int, ocr_lang: str) -> Tuple[str, D
 
     pipe = "\n".join(lines)
 
-
-   # chỉ vá khi nhìn giống header VAS và header đang có đúng 4 cột
+    # chỉ vá khi nhìn giống header VAS và header đang có đúng 4 cột
     if _looks_like_vas_5col(pipe) and len((pipe.splitlines() or [''])[0].split("|")) == 4:
         pipe = _enforce_fin_5cols_if_header_missing(pipe) 
 
@@ -1502,6 +1800,10 @@ def _simple_narrator(pipe_text: str) -> str:
     roman = []
     for ln in lines[1:]:
         parts = [p.strip() for p in ln.split("|")]
+        # giữ nguyên placeholder None (đừng strip thành rỗng)
+        parts = [ (p if p.strip() != "" else NULL_TOKEN) for p in parts ]
+
+
         nums += sum(1 for p in parts if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", p or ""))
         if re.match(r"^\s*(I|II|III|IV|V|VI|VII|VIII|IX|X)\.?\s", ln):
             roman.append(ln.split("|", 1)[0].strip())
@@ -1625,9 +1927,9 @@ def process_page(
         pad_top = int(gl.get("roi_pad_top", 120))
         pad_lr  = int(gl.get("roi_pad_lr", 8))
 
-
-        tsv_pipe = ""
-        pad_pipe = ""
+        # Thu pipe theo từng ROI, lát nữa chọn cái “đầy dòng” nhất
+        tsv_candidates: List[Tuple[str, int]] = []
+        pad_candidates: List[Tuple[str, int]] = []
         rul_pipe = ""
         pil_roi_first = None
 
@@ -1643,17 +1945,23 @@ def process_page(
 
             meta.setdefault("roi_padded", []).append([x1_p, y1_p, x2_p, y2_p])
 
-            # a) TSV var-col
-            tsv_pipe, _ = build_table_tsv(pil_roi, y_tol=y_tol, ocr_lang=ocr_lang)
-            # b) Paddle var-col
-            pad_pipe = ""
+            # a) TSV var-col (ứng viên)
+            _tsv_pipe, _ = build_table_tsv(pil_roi, y_tol=y_tol, ocr_lang=ocr_lang)
+            if _tsv_pipe and _tsv_pipe.strip():
+                tsv_candidates.append((_tsv_pipe, _tsv_pipe.strip().count("\n")))
+
+            # b) Paddle var-col (ứng viên)
             if _HAS_PADDLE and table_engine in ("auto", "paddle"):
                 try:
-                    pad_pipe = paddle_table_to_pipe(pil_roi, lang=paddle_lang, use_gpu=paddle_gpu) or ""
+                    _pad_pipe = paddle_table_to_pipe(pil_roi, lang=paddle_lang, use_gpu=paddle_gpu) or ""
+                    if _pad_pipe and _pad_pipe.strip():
+                        pad_candidates.append((_pad_pipe, _pad_pipe.strip().count("\n")))
                 except Exception as e:
                     meta.setdefault("paddle_table_error", str(e))
 
-
+        # Chọn pipe “đầy dòng” nhất cho mỗi phương án
+        tsv_pipe = max(tsv_candidates, key=lambda x: x[1])[0] if tsv_candidates else ""
+        pad_pipe = max(pad_candidates, key=lambda x: x[1])[0] if pad_candidates else ""
 
         # c) chọn route (ưu tiên theo đặc trưng trang) + rulings (vạch dọc)
         def _detect_grid_hint(bgr_page: np.ndarray) -> bool:
@@ -1681,7 +1989,10 @@ def process_page(
         n_pad  = _nl(pad_pipe)
         n_rul  = _nl(rul_pipe)
 
-        if has_grid and n_pad > 0 and n_pad >= max(n_tsv, n_rul):
+        # Cho phép Paddle “thua nhẹ” tối đa 2 dòng khi phát hiện grid
+        grid_margin = 2
+
+        if has_grid and n_pad > 0 and (n_pad + grid_margin) >= max(n_tsv, n_rul):
             chosen_pipe, route = pad_pipe, "paddle(grid)"
         elif n_rul > 0 and n_rul >= max(n_tsv, n_pad):
             chosen_pipe, route = rul_pipe, "rulings(lock-x)"
@@ -1692,22 +2003,23 @@ def process_page(
                 "paddle" if pad_pipe else ("tsv" if tsv_pipe else "rulings")
             )
 
-        # === Build final pipe (không ép 5 cột; luôn auto suy luận cột)
+        # === Build final pipe (auto, không ép cứng)
         block_text = (chosen_pipe or "").strip()
-
-        # (tuỳ chọn) nếu muốn giữ vá thiếu 'Thuyết minh' cho riêng VAS thì để mở dòng sau
-        # block_text = _enforce_fin_5cols_if_header_missing(block_text)
-
-        # Chuẩn hoá số ở các cột tiền (nếu có) rồi lọc caption/header rác
-        block_text = _normalize_all_amounts_in_pipe(block_text)
+        block_text = _trim_to_table_body(block_text)
         block_text = _prefilter_table_lines(block_text, yaml_table)
 
-        # === NEW: luôn auto-suy luận cột để audit + phục vụ narrator
+        # 1) TÁCH NOTE nội dòng ra cột riêng (5.2, 7(a), 15.1...)
+        block_text = _extract_inline_note_and_insert_col(block_text)
+        block_text = _normalize_all_amounts_in_pipe(block_text)
+        block_text = _repack_pipe_by_inferred_schema(block_text)   # KHÔNG truyền keyword
+
+
+
+        # giữ phần auto schema + narrator như bạn đã có
         _auto = pipe_to_flex_schema(block_text)
         meta["auto_schema_indices"] = _auto.get("indices")
 
-
-        # Narrator theo từng dòng (full-page)  ← 5A
+        # Narrator theo từng dòng (full-page)
         if narrator_on:
             nar = build_narrator_from_pipe(block_text)
             if nar and nar.strip():
@@ -1891,6 +2203,14 @@ def process_one_file(file_path: str, input_root: str, output_root: str,
             with open(stem + "_TABLE.txt", "w", encoding="utf-8") as f:
                 f.write("\n".join(blocks_table_only).strip())
         print("🔎 Split-debug files written.")
+
+def make_output_paths(input_root: str, output_root: str, file_path: str) -> Tuple[str,str]:
+    rel = os.path.relpath(file_path, start=input_root)
+    rel_dir = os.path.dirname(rel)
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    out_dir = os.path.join(output_root, rel_dir); ensure_dir(out_dir)
+    return (os.path.join(out_dir, f"{stem}_text.txt"),
+            os.path.join(out_dir, f"{stem}_meta.json"))
 
 def build_argparser():
     p = argparse.ArgumentParser(

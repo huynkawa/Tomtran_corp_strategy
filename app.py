@@ -8,13 +8,15 @@ from src.rag_chain import rag_answer
 from src.prompt_loader import load_prompts, render_system_prompt
 from src.config import make_embeddings, EMBED_MODEL
 from langchain_chroma import Chroma
+from dotenv import load_dotenv
+load_dotenv(".env.active")
 
 # --- Giao diện ChatGPT style ---
-from src.ui_layout import render_ui
+from src.ui_streamlit_theme import render_page
 from src.chat_saver import save_chat
 
 # 🚀 Tạo UI và lấy các tham số
-user_msg, temperature, top_p, fallback_general, K, MIN_RELEVANCE, debug_mode, show_system, show_rag = render_ui("TOMTRANCHATBOT")
+user_msg, temperature, top_p, fallback_general, K, MIN_RELEVANCE, debug_mode, show_system, show_rag = render_page("TOMTRAN AGENT AI")
 
 # === Load Prompt cấu hình ===
 cfg = load_prompts("prompts/prompts.yaml")
@@ -205,10 +207,3 @@ if user_msg:
 
     # 🔄 Làm mới lại giao diện để hiển thị tin nhắn mới
     st.rerun()
-
-# --- FOOTER ---
-st.markdown(
-    f"<hr><div style='text-align:center; color:gray; font-size:0.9em'>"
-    f"☁️ Embedding: OpenAI – {EMBED_MODEL}</div>",
-    unsafe_allow_html=True,
-)

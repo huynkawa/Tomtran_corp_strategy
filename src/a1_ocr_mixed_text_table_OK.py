@@ -22,7 +22,7 @@ Tác giả: bạn & mình 😄
 
 import os, re, io, json, hashlib, argparse
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import pdfplumber
 from PIL import Image, ImageOps
@@ -305,6 +305,117 @@ def detect_table_class(block_text: str, yaml_rules: dict, fallback: Optional[str
     if dc.get("client_keywords")    and has_any(dc["client_keywords"]):    return "client"
     return fallback
 
+# ===== Post-clean (light) =====
+def _yaml_bool(d: dict, path: List[str], default: bool) -> bool:
+    cur = d or {}
+    for k in path:
+        if not isinstance(cur, dict) or (k not in cur):
+            return default
+        cur = cur[k]
+    return bool(cur)
+
+def sanitize_text_block(text: str, yaml_rules: dict) -> Tuple[str, List[str]]:
+    """Làm sạch nhẹ TEXT sau GPT: bỏ NBSP, '|' lẻ, chuẩn hoá khoảng trắng."""
+    warnings = []
+    cfg = (yaml_rules or {}).get("text_cleanup", {}) or {}
+    out = text or ""
+
+    # strip characters
+    for ch in cfg.get("strip_characters", ["\u00A0", "\t", "\r"]):
+        out = out.replace(ch, " ")
+
+    # bỏ dấu '|' đơn lẻ (tránh làm hỏng bảng vì TEXT block thôi)
+    out = re.sub(r" ?\| ?", " ", out)
+
+    # normalize spaces
+    if cfg.get("normalize_spaces", True):
+        out = re.sub(r"[ \t]+", " ", out)
+
+    # drop lines matching remove_patterns
+    rem_patts = cfg.get("remove_patterns", [])
+    if rem_patts:
+        kept = []
+        for line in out.splitlines():
+            drop = False
+            for patt in rem_patts:
+                try:
+                    if re.search(patt, line):
+                        drop = True
+                        break
+                except re.error:
+                    continue
+            if not drop:
+                kept.append(line)
+        out = "\n".join(kept)
+
+    # collapse double newlines
+    if cfg.get("collapse_double_newlines", True):
+        out = re.sub(r"\n{3,}", "\n\n", out.strip())
+
+    if out.strip() == "":
+        warnings.append("text_block_empty_after_sanitize")
+
+    return out.strip(), warnings
+
+def sanitize_tsv_block(tsv: str, yaml_rules: dict) -> Tuple[str, List[str]]:
+    """Làm sạch nhẹ TSV: trim cell, drop caption/rows rỗng, giữ nguyên giá trị."""
+    warnings = []
+    rules = yaml_rules or {}
+    clean_rules = (rules.get("table_clean_rules") or {})
+    validators = (rules.get("validators") or {})
+
+    lines = [ln for ln in (tsv or "").splitlines()]
+    new_lines = []
+    min_cols = validators.get("min_columns", 1)
+    max_cols = validators.get("max_columns", 1000)
+
+    # compile drop patterns
+    patt_list = []
+    for patt in clean_rules.get("drop_rows_matching", []) or []:
+        try:
+            patt_list.append(re.compile(patt))
+        except re.error:
+            continue
+
+    for raw in lines:
+        # split by tab (TSV assumed)
+        cells = [c.strip() for c in raw.split("\t")]
+        # drop caption lines
+        drop = False
+        for rp in patt_list:
+            if rp.search(raw):
+                drop = True
+                break
+        if drop:
+            continue
+
+        # drop all-empty row
+        if clean_rules.get("drop_if_all_empty", True):
+            if all((c == "" for c in cells)):
+                continue
+
+        # trim cells always (already trimmed above)
+        if clean_rules.get("trim_cells", True):
+            cells = [c.strip() for c in cells]
+
+        # basic col bounds
+        if len(cells) < min_cols:
+            warnings.append(f"row_dropped_min_cols:{len(cells)}<{min_cols}")
+            continue
+        if len(cells) > max_cols:
+            warnings.append(f"row_trimmed_max_cols:{len(cells)}>{max_cols}")
+            cells = cells[:max_cols]
+
+        new_lines.append("\t".join(cells))
+
+    cleaned = "\n".join(new_lines).strip()
+
+    # warn if empty
+    if cleaned == "":
+        warnings.append("table_block_empty_after_sanitize")
+
+    return cleaned, warnings
+
 # ===== Vector JSONL =====
 def append_vector_jsonl(vec_path: Path, content: str, metadata: dict):
     with open(vec_path, "a", encoding="utf-8") as f:
@@ -336,6 +447,7 @@ def process_file(
     has_table = False
     gpt_applied = False
     gpt_reasons: List[str] = []
+    postclean_warnings: List[str] = []
 
     rules_version = (yaml_rules.get("meta", {}) or {}).get("version")
     vec_path = out_dir / f"{file_name}_vector.jsonl" if vector_jsonl else None
@@ -349,8 +461,20 @@ def process_file(
             reason += f":{extra_meta['source']}"
         if reason not in gpt_reasons:
             gpt_reasons.append(reason)
-        return _enhance_with_gpt(text, {**meta, **extra_meta, "gpt_mode": mode}, None,
-                                 prompt=prompt, mode=mode)
+
+        # Nhét prompt vào meta để các bản enhancer cũ vẫn đọc được nếu cần
+        payload_meta = {**meta, **extra_meta, "gpt_mode": mode, "gpt_prompt": prompt}
+
+        # 1) Thử gọi theo chữ ký mới (có prompt/mode)
+        try:
+            return _enhance_with_gpt(text, payload_meta, None, prompt=prompt, mode=mode)
+        except TypeError:
+            # 2) Fallback chữ ký cũ (không có prompt/mode)
+            try:
+                return _enhance_with_gpt(text, payload_meta, None)
+            except TypeError:
+                # 3) Fallback tối giản nhất
+                return _enhance_with_gpt(text)
 
     try:
         if ext == ".docx":
@@ -363,6 +487,10 @@ def process_file(
                     cls = meta.get("class") or detect_table_class(b["content"], yaml_rules)
                     enhanced = call_gpt(b["content"], "table_only",
                                         {"doc_type": "DOCX", "table_index": tbl_idx, "class": cls})
+                    # --- postclean TSV (light)
+                    enhanced, warns = sanitize_tsv_block(enhanced, yaml_rules)
+                    postclean_warnings.extend([f"docx_table{tbl_idx}:{w}" for w in warns])
+
                     combined += [f"### [DOCX] [TABLE {tbl_idx}]", enhanced.strip()]
                     if vec_path:
                         append_vector_jsonl(vec_path, enhanced.strip(),
@@ -374,6 +502,10 @@ def process_file(
                         enhanced = call_gpt(para, "paragraph_with_headings", {"doc_type": "DOCX"})
                     else:
                         enhanced = para
+                    # --- postclean TEXT (light)
+                    enhanced, warns = sanitize_text_block(enhanced, yaml_rules)
+                    postclean_warnings.extend([f"docx_text:{w}" for w in warns])
+
                     combined += [f"### [DOCX] [TEXT]", enhanced.strip()]
                     if vec_path:
                         append_vector_jsonl(vec_path, enhanced.strip(),
@@ -394,6 +526,10 @@ def process_file(
                     enhanced = call_gpt(b["content"], "table_only",
                                         {"doc_type":"PDF","page":page_no,"table_index":idx_on_page,
                                          "source": b.get("source","text_layer"), "class": cls})
+                    # --- postclean TSV (light)
+                    enhanced, warns = sanitize_tsv_block(enhanced, yaml_rules)
+                    postclean_warnings.extend([f"pdf_p{page_no}_t{idx_on_page}:{w}" for w in warns])
+
                     combined += [f"### [PDF page {page_no}] [TABLE {idx_on_page}]", enhanced.strip()]
                     if vec_path:
                         append_vector_jsonl(vec_path, enhanced.strip(),
@@ -406,6 +542,10 @@ def process_file(
                         enhanced = call_gpt(para, "paragraph_with_headings", {"doc_type":"PDF","page":page_no})
                     else:
                         enhanced = para
+                    # --- postclean TEXT (light)
+                    enhanced, warns = sanitize_text_block(enhanced, yaml_rules)
+                    postclean_warnings.extend([f"pdf_p{page_no}_text:{w}" for w in warns])
+
                     combined += [f"### [PDF page {page_no}] [TEXT]", enhanced.strip()]
                     if vec_path:
                         append_vector_jsonl(vec_path, enhanced.strip(),
@@ -418,6 +558,10 @@ def process_file(
                 has_table = True
                 cls = meta.get("class") or detect_table_class(txt, yaml_rules)
                 enhanced = call_gpt(txt, "table_only", {"doc_type":"IMG","class":cls})
+                # --- postclean TSV (light)
+                enhanced, warns = sanitize_tsv_block(enhanced, yaml_rules)
+                postclean_warnings.extend([f"img_table:{w}" for w in warns])
+
                 combined += [f"### [IMG] [TABLE 1]", enhanced.strip()]
                 if vec_path:
                     append_vector_jsonl(vec_path, enhanced.strip(),
@@ -430,6 +574,10 @@ def process_file(
                 enhanced = call_gpt(raw, "paragraph_with_headings", {"doc_type":"TXT"})
             else:
                 enhanced = raw
+            # --- postclean TEXT (light)
+            enhanced, warns = sanitize_text_block(enhanced, yaml_rules)
+            postclean_warnings.extend([f"txt_text:{w}" for w in warns])
+
             combined += [f"### [TXT] [TEXT]", enhanced.strip()]
             if vec_path:
                 append_vector_jsonl(vec_path, enhanced.strip(),
@@ -443,6 +591,10 @@ def process_file(
                 cls = meta.get("class") or detect_table_class(b["content"], yaml_rules)
                 enhanced = call_gpt(b["content"], "table_only",
                                     {"doc_type":"EXCEL","sheet":b["sheet"], "table_index": i, "class": cls})
+                # --- postclean TSV (light)
+                enhanced, warns = sanitize_tsv_block(enhanced, yaml_rules)
+                postclean_warnings.extend([f"excel_{b['sheet']}_t{i}:{w}" for w in warns])
+
                 combined += [f"### [EXCEL] [SHEET={b['sheet']}] [TABLE {i}]", enhanced.strip()]
                 if vec_path:
                     append_vector_jsonl(vec_path, enhanced.strip(),
@@ -467,6 +619,8 @@ def process_file(
             "rules_version": rules_version,
             "page_range_applied": {"start": page_start, "end": page_end} if page_start or page_end else None
         })
+        if postclean_warnings:
+            meta["postclean_warnings"] = postclean_warnings
 
         ensure_dir(out_dir)
         txt_out  = out_dir / f"{file_name}_text.txt"
@@ -489,7 +643,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--file_index", type=int, default=None, help="[pages] Chỉ chạy 1 PDF (1-based); bỏ qua = tất cả")
     p.add_argument("--ocr-lang", default=OCR_LANG_DEFAULT, help="Ngôn ngữ OCR (vd: vie+eng)")
     p.add_argument("--ocr-psm",  default=OCR_PSM_DEFAULT, help="PSM Tesseract (vd: 4/6/11)")
-    p.add_argument("--vector-jsonl", action="store_true", help="Xuất thêm <name>_vector.jsonl")
+    p.add_argument("--no-vector-jsonl", dest="vector_jsonl", action="store_false", help="Tắt xuất <name>_vector.jsonl (mặc định: bật)")
+    p.set_defaults(vector_jsonl=True)
+
     return p
 
 def main():

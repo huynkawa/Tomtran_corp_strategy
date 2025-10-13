@@ -35,7 +35,7 @@ import shutil
 APPEND_MODE = False  # sẽ bật True trong main() khi --clean a
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (theo yêu cầu) =========
-PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_financial_reports_test"
+PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1_prelight_ocr_bctc"
 OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_KO_GPT"
 
 # ========= Cấu hình Tesseract =========
