@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-src/a1_text_only_output.py 
+src/a1_text_only_outputs.py 
 — Text-first extractor (PDF/DOCX/TXT/IMG/EXCEL)
 - Ưu tiên đọc TEXT layer thật sạch; vẫn nhận diện TABLE cơ bản (giữ logic hiện tại)
 - KHÔNG sinh vector.jsonl ở bước này (để post-clean rồi mới vectorize)
@@ -16,7 +16,8 @@ src/a1_text_only_output.py
 Cách chạy:
     python -m src.a1_text_only_runner --start 1 --end 3
 """
-
+import yaml
+import pandas as pd
 import os, re, io, json, hashlib, argparse, shutil, datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -27,8 +28,32 @@ import pytesseract
 from docx import Document
 from tqdm import tqdm
 from langdetect import detect
-import yaml
-import pandas as pd
+
+# --- META imports (robust) ---
+try:
+    from src.schemas.meta import OCRInfo
+except ModuleNotFoundError:
+    from schemas.meta import OCRInfo
+
+try:
+    from src.utils.meta_utils import build_meta
+except ModuleNotFoundError:
+    from utils.meta_utils import build_meta
+
+# --- auto hints (domain + book extras)
+try:
+    from src.utils.meta_utils import auto_meta_hints
+except ModuleNotFoundError:
+    from utils.meta_utils import auto_meta_hints
+
+#----Import helpe
+try:
+    from src.utils.meta_utils import finalize_meta
+except ModuleNotFoundError:
+    from utils.meta_utils import finalize_meta
+
+
+
 
 # ===== ENV & GPT enhancer (bảng) =====
 try:
@@ -49,7 +74,7 @@ OCR_CFG_TEMPLATE = "--psm {psm} preserve_interword_spaces=1"
 
 # Đường dẫn của bạn (giữ nguyên)
 INPUT_DIR  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a_text_only_inputs_test"
-OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\a1_text_only_outputs"
+OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs1\a1_text_only_outputs"
 YAML_TEXT_PATH_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\a1_text_only.yaml"
 YAML_TABLE_PATH_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\a1_text_only_table.yaml"
 
@@ -81,6 +106,21 @@ def detect_language_safe(text: str) -> str:
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+def sniff_pdf_docinfo(file_path: Path) -> dict:
+    """Lấy Title/Author/Producer/CreationDate... từ PDF nếu có."""
+    info = {}
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            meta = getattr(pdf, "metadata", None) or getattr(pdf, "docinfo", None) or {}
+            # PyPDF2 meta keys có thể là '/Title', '/Author'...
+            for k, v in (meta.items() if hasattr(meta, "items") else []):
+                kk = str(k).lstrip("/").lower()
+                if v:
+                    info[kk] = str(v)
+    except Exception:
+        pass
+    return info
 
 def load_yaml_rules(path: Optional[str]) -> dict:
     if not path: return {}
@@ -321,7 +361,15 @@ def sanitize_text_block(text: str, yaml_rules: dict) -> Tuple[str, List[str]]:
         out = re.sub(r"[ \t]+", " ", out)
 
     # drop lines matching remove_patterns
-    rem_patts = cfg.get("remove_patterns", [])
+    # mặc định lọc một số rác thường gặp (HBR/Bookey/watermark)
+    default_noise = [
+        r"(?i)\bbookey\b",
+        r"(?i)more\s+free\s+books",
+        r"(?i)scan\s+to\s+download",
+        r"(?i)copyright\s+\d{4}",
+        r"(?i)all\s+rights\s+reserved",
+    ]
+    rem_patts = (cfg.get("remove_patterns") or []) + default_noise
     if rem_patts:
         kept = []
         for line in out.splitlines():
@@ -410,6 +458,18 @@ def call_gpt_table_if_enabled(text: str, meta: dict, yaml_rules: dict, gpt_table
         except TypeError:
             return _enhance_with_gpt(text)
 
+def _json_default(o):
+    # serialize datetime/date an toàn
+    try:
+        import datetime as _dt
+        if isinstance(o, (_dt.datetime, _dt.date)):
+            return o.isoformat()
+    except Exception:
+        pass
+    # fallback: ép chuỗi cho mọi loại khác lạ
+    return str(o)
+
+
 # ===== Ghi file theo chế độ Y/N/A =====
 def write_outputs_per_mode(base_path: Path, combined_text: str, meta: dict, mode_yna: str):
     """
@@ -431,7 +491,8 @@ def write_outputs_per_mode(base_path: Path, combined_text: str, meta: dict, mode
         with open(txt_out, "w", encoding="utf-8") as f:
             f.write(combined_text)
         with open(meta_out, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+            json.dump(meta, f, ensure_ascii=False, indent=2, default=_json_default)
+
         return "rewritten"
 
     if mode_yna == "N":
@@ -440,7 +501,8 @@ def write_outputs_per_mode(base_path: Path, combined_text: str, meta: dict, mode
         with open(txt_out, "w", encoding="utf-8") as f:
             f.write(combined_text)
         with open(meta_out, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+            json.dump(meta, f, ensure_ascii=False, indent=2, default=_json_default)
+
         return "created"
 
     # mode_yna == "A" → append nếu khác nội dung
@@ -472,7 +534,8 @@ def write_outputs_per_mode(base_path: Path, combined_text: str, meta: dict, mode
                      "text_sha1": sha1_of_text(combined_text)})
     meta2 = {**meta, "_append_history": hist}
     with open(meta_out, "w", encoding="utf-8") as f:
-        json.dump(meta2, f, ensure_ascii=False, indent=2)
+        json.dump(meta2, f, ensure_ascii=False, indent=2, default=_json_default)
+
     return "appended" if appended else "unchanged"
 
 # ===== Xử lý 1 file =====
@@ -576,15 +639,51 @@ def process_file(
 
         combined_text = "\n".join([c for c in combined if c.strip()]).strip()
 
+        yaml_class = (meta or {}).get("class")
+        domain_hint, _auto_extras = auto_meta_hints(file_path, ext, combined_text, yaml_class)
+
+
+        # === NEW: chuẩn hoá meta theo utils.meta_utils ===
         lang = detect_language_safe(combined_text)
-        meta.update({
-            "language": lang,
-            "has_table": has_table,
-            "text_sha1": sha1_of_text(combined_text),
-            "page_range_applied": {"start": page_start, "end": page_end} if page_start or page_end else None
-        })
+
+
+        # Đảm bảo page_end là số (PageRange cần int)
+        eff_page_start = page_start or 1
+        eff_page_end = page_end if page_end is not None else eff_page_start
+
+        meta_core_obj = build_meta(
+            source_path=str(file_path),
+            domain_hint=domain_hint,        # ← dùng domain_hint auto
+            text=combined_text,
+            language=lang,
+            content_type="text",
+            title=None,
+            ocr_info=OCRInfo(engine="paddleocr", dpi=300),
+            page_start=page_start,
+            page_end=page_end,
+            extra={
+                "page_range_applied": ({"start": page_start, "end": page_end} if (page_start or page_end) else None),
+                "has_tables": has_table,
+                "pipeline": "A1",
+                "pipeline_stage": "text",
+                **_auto_extras,              # ← gộp auto title/authors/publisher/year (nếu có)
+            }
+        )
+
+
+        # Merge + lọc company cho sách (JSON-safe) — centralized rule ở meta_utils
+        meta = finalize_meta(meta, meta_core_obj, text=combined_text, file_path=file_path)
         if postclean_warnings:
             meta["postclean_warnings"] = postclean_warnings
+
+        return combined_text, meta
+
+
+        # Giữ các key meta cũ (nếu có), ưu tiên giá trị mới từ meta_core
+        meta = {**meta, **meta_core}
+        if postclean_warnings:
+            meta["postclean_warnings"] = postclean_warnings
+
 
         return combined_text, meta  # trả text + meta (để caller ghi theo mode Y/N/A)
 

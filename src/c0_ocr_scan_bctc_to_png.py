@@ -30,7 +30,7 @@ except Exception:
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (Windows) =========
 DEFAULT_IN  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_scan_inputs_test"
-DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\c1_ocr_scan_bctc_to_png"
+DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs0\c0_ocr_scan_bctc_to_png"
 POPPLER_PATH = os.environ.get("POPPLER_PATH", None)  # set nếu cần
 
 # ========= TIỆN ÍCH =========

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-src/c2_ocr_scan_bctc_output.py — OCR từ ảnh prelight (ưu tiên _bin.png) → TXT + META
+src/c2_ocr_scan_bctc_outputs.py — OCR từ ảnh prelight (ưu tiên _bin.png) → TXT + META
 
 Mục tiêu:
 - Đọc ảnh đã qua prelight (deskew/crop/binarize) để OCR bền vững hơn so với render PDF trực tiếp.
@@ -103,13 +103,13 @@ CLEAN_FILES = False  # ⚑ mới: xoá theo từng file trang trong phạm vi st
 import src.env  # ✅ đảm bảo nạp .env.active và set OPENAI_API_KEY
 
 # === GPT enhancer (module ngoài) + công tắc ngay trong code ===
-from src.c2_gpt_bctc_outputs import enhance_table_with_gpt as gpt_fix_table
+from src.c1_gpt_bctc_outputs import enhance_table_with_gpt as gpt_fix_table
 
 USE_GPT = True   # True = BẬT GPT; False = TẮT GPT
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (theo yêu cầu) =========
-PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\\outputs\c1_ocr_scan_bctc_to_png"
-OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\c2_ocr_scan_bctc_outputs"
+PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\\outputs\outputs0\c0_ocr_scan_bctc_to_png"
+OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs1\c1_ocr_scan_bctc_outputs"
 
 # ========= Cấu hình Tesseract =========
 OCR_LANG_DEFAULT = "vie+eng"

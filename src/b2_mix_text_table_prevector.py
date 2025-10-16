@@ -5,11 +5,6 @@ c2_clean_tables_pre_vector.py — BẢN CHUYÊN CHO BẢNG
 - Quét cả thư mục input (mirror sang out-root)
 - Chỉ xử lý các block [TABLE ...] trong *_text.txt|*_text.final.txt
 - Clean TSV mạnh tay + xuất <stem>_tables.final.tsv và <stem>_vector.jsonl
-
-Chạy ví dụ:
-  python -m src.c2_clean_tables_pre_vector
-  # hoặc chỉ xử lý file mới:
-  python -m src.c2_clean_tables_pre_vector --skip-existing
 """
 
 import os, re, json, argparse
@@ -17,8 +12,8 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 from collections import Counter
 
-IN_ROOT_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\b1_mix_text_table_output"
-OUT_ROOT_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\b2_mix_text_table_prevector"
+IN_ROOT_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs1\b1_mix_text_table_output"
+OUT_ROOT_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs2\b2_mix_text_table_prevector"
 PATTERN_DEFAULT  = "*_text.txt|*_text.final.txt"
 
 HDR_BRACKETS = re.compile(r"\[([^\]]+)\]")

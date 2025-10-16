@@ -1,4 +1,3 @@
-from src.utils.meta_utils import to_vector_meta
 # -*- coding: utf-8 -*-
 """
 src.a2_clean_text_only_prevector.py
@@ -314,7 +313,6 @@ def process_pair(
     blocks     = filter_blocks_by_page(blocks_all, page_start, page_end)
 
     cleaned_parts: List[str] = []
-    chunk_idx = 0
     kept_count = 0
 
     # CHỈ xử lý TEXT; mọi TABLE đều bỏ qua ở bước này
@@ -328,10 +326,12 @@ def process_pair(
         if cleaned:
             kept_count += 1
             cleaned_parts += [f"### [TEXT CLEAN] [SRC={b.get('src','')}]", cleaned]
-            flat = to_vector_meta(meta_in, chunk_idx=chunk_idx, page=b.get("page"), heading_path=None)
-            flat["stage"] = "final_clean"; flat["content_type"] = "TEXT"; flat["src"] = b.get("src")
-            append_vector_jsonl(out_vec, cleaned, flat)
-            chunk_idx += 1
+            append_vector_jsonl(
+                out_vec,
+                cleaned,
+                {**meta_in, "content_type": "TEXT", "stage": "final_clean",
+                 "page": b.get("page"), "src": b.get("src")}
+            )
 
     # Trường hợp không có marker hợp lệ (hiếm) → coi là TEXT nguyên khối
     if not blocks_all:
@@ -339,10 +339,7 @@ def process_pair(
         if cleaned:
             kept_count += 1
             cleaned_parts = ["### [TEXT CLEAN] [SRC=UNKNOWN]", cleaned]
-            flat = to_vector_meta(meta_in, chunk_idx=chunk_idx, page=None, heading_path=None)
-            flat["stage"] = "final_clean"; flat["content_type"] = "TEXT"
-            append_vector_jsonl(out_vec, cleaned, flat)
-            chunk_idx += 1
+            append_vector_jsonl(out_vec, cleaned, {**meta_in, "content_type":"TEXT", "stage":"final_clean"})
 
     final_text = "\n".join(cleaned_parts).strip()
 

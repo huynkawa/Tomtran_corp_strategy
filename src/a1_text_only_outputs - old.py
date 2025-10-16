@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-src/b1_mix_text_table_inputs.py — Text-first extractor (PDF/DOCX/TXT/IMG/EXCEL)
-- Ưu tiên đọc TABLE tốt nhất, rõ ràng số liệu; vẫn đọc TEXT layer tốt
+src/a1_text_only_outputs.py 
+— Text-first extractor (PDF/DOCX/TXT/IMG/EXCEL)
+- Ưu tiên đọc TEXT layer thật sạch; vẫn nhận diện TABLE cơ bản (giữ logic hiện tại)
 - KHÔNG sinh vector.jsonl ở bước này (để post-clean rồi mới vectorize)
 
 Điểm chính:
@@ -13,7 +14,7 @@ src/b1_mix_text_table_inputs.py — Text-first extractor (PDF/DOCX/TXT/IMG/EXCEL
 - Xuất: <name>_text.txt + <name>_meta.json (không tạo *_vector.jsonl)
 
 Cách chạy:
-    python -m src.b1_mix_text_table_inputs --start 1 --end 3
+    python -m src.a1_text_only_runner --start 1 --end 3
 """
 
 import os, re, io, json, hashlib, argparse, shutil, datetime
@@ -28,6 +29,8 @@ from tqdm import tqdm
 from langdetect import detect
 import yaml
 import pandas as pd
+from src.schemas.meta import MetaDoc, Domain, new_meta
+from src.utils.ids_meta import make_doc_id, make_page_id, make_chunk_id
 
 # ===== ENV & GPT enhancer (bảng) =====
 try:
@@ -47,10 +50,10 @@ OCR_PSM_DEFAULT  = "6"  # single block
 OCR_CFG_TEMPLATE = "--psm {psm} preserve_interword_spaces=1"
 
 # Đường dẫn của bạn (giữ nguyên)
-INPUT_DIR  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\b_mix_text_table_inputs_test"
-OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs1\b1_mix_text_table_output"
-YAML_TEXT_PATH_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\b1_text_only.yaml"
-YAML_TABLE_PATH_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\b1_mix_text_table.yaml"
+INPUT_DIR  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a_text_only_inputs_test"
+OUTPUT_DIR = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\outputs1\a1_text_only_outputs"
+YAML_TEXT_PATH_DEFAULT  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\a1_text_only.yaml"
+YAML_TABLE_PATH_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\a1_text_only_table.yaml"
 
 # ===== Print config only once =====
 _CONFIG_PRINTED = False
@@ -150,10 +153,10 @@ def build_gpt_prompt_from_yaml(yaml_rules: dict, mode: str) -> str:
 
 # ===== Heuristics TEXT/TABLE =====
 def is_tableish_line(line: str) -> bool:
-    # thận trọng hơn để giảm false-positive bảng
-    if "\t" in line:
+    # [CHANGE] thận trọng hơn để giảm false-positive bảng
+    if "\t" in line: 
         return True
-    if line.count("|") >= 2:
+    if line.count("|") >= 2: 
         return True
     multi_spaces = len(re.findall(r"\s{2,}", line)) >= 3
     if multi_spaces:
@@ -189,155 +192,26 @@ def normalize_to_tsv(rows_2d: List[List[str]]) -> str:
         out.append("\t".join([_sanitize_cell(c) for c in r]))
     return "\n".join(out)
 
-# ==== PATCH: helpers for better tables/text ====
-def _approx_cols(tsv: str) -> int:
-    """Ước lượng số cột của 1 block TSV."""
-    lines = [ln for ln in (tsv or "").splitlines() if ln.strip()]
-    if not lines: return 0
-    return max(ln.count("\t") + 1 for ln in lines)
-
-def merge_table_fragments(blocks: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Gộp các 'bảng vụn' 1–2 cột vào bảng liền trước (cùng trang).
-    Tránh trộn vào các bảng chuẩn (>=3 cột) như Bảng 1.1 & 1.2.
-    """
-    out = []
-    for b in blocks:
-        if b.get("type") == "table" and out and out[-1].get("type") == "table":
-            same_page = b.get("page") and (b.get("page") == out[-1].get("page"))
-            if same_page:
-                c_prev = _approx_cols(out[-1].get("content", ""))
-                c_cur  = _approx_cols(b.get("content", ""))
-                if c_prev >= 3 and c_cur >= 3:
-                    out.append(b)  # 2 bảng chuẩn: để nguyên
-                else:
-                    # gộp mảnh (ít cột) vào bảng trước
-                    out[-1]["content"] = (out[-1].get("content","") + "\n" + b.get("content","")).strip()
-                    continue
-            else:
-                out.append(b)
-        else:
-            out.append(b)
-    return out
-
-def _collapse_spaced_caps(s: str) -> str:
-    """
-    Ghép chuỗi CHỮ HOA bị tách rời bởi khoảng trắng (OCR noise), ví dụ:
-    'G N Ộ Đ C Á T Ự S' -> 'GNỘĐCÁTỰS' (giảm rác trong ma trận/legend).
-    """
-    return re.sub(r'((?:[A-ZÀ-ỸĐ]\s+){3,}[A-ZÀ-ỸĐ])',
-                  lambda m: m.group(0).replace(" ", ""),
-                  s)
-
-def _fix_common_vn_typos_in_tsv(s: str) -> str:
-    # Chuẩn hoá một số lỗi OCR/đặt font
-    s = re.sub(r"xảy\s*xa\b", "xảy ra", s, flags=re.I)
-    s = s.replace("", "★")  # hợp nhất ký hiệu sao
-    return s
-
-_NOISY_ROW_RE = re.compile(
-    r"^(GNỘĐCÁTỰS|KHẢ NĂNG XẢY RA\b|\d+\s*-\s*Không\s*$)", re.I
-)
-
-
 # ===== DOCX =====
 def read_docx_paragraphs_and_tables(file_path: Path) -> List[Dict[str, str]]:
-    """
-    Đọc DOCX theo đúng thứ tự xuất hiện (paragraph↔table), gom văn bản trong cell,
-    khử dòng trống, dedup ô do merge, và xuất bảng dưới dạng TSV.
-    """
-    from docx import Document
-    from docx.table import _Cell, Table
-    from docx.text.paragraph import Paragraph
-    from docx.oxml.text.paragraph import CT_P
-    from docx.oxml.table import CT_Tbl
-
     doc = Document(file_path)
-
-    # -- helpers --------------------------------------------------------------
-    def iter_block_items(parent):
-        """
-        Yield Paragraph và Table theo đúng thứ tự trong parent (document body hoặc cell).
-        """
-        if isinstance(parent, _Cell):
-            parent_elm = parent._tc
-        else:
-            parent_elm = parent.element.body
-        for child in parent_elm.iterchildren():
-            if isinstance(child, CT_P):
-                yield Paragraph(child, parent)
-            elif isinstance(child, CT_Tbl):
-                yield Table(child, parent)
-
-    def para_is_list(p: Paragraph) -> bool:
-        try:
-            return p._p.pPr.numPr is not None
-        except Exception:
-            return False
-
-    def para_level(p: Paragraph) -> int:
-        try:
-            ilvl = p._p.pPr.numPr.ilvl.val
-            return int(ilvl)
-        except Exception:
-            return 0
-
-    def para_to_text(p: Paragraph) -> str:
-        txt = (p.text or "").strip()
-        if not txt:
-            return ""
-        # tiền tố bullet/number nếu là danh sách
-        if para_is_list(p):
-            indent = "  " * max(0, para_level(p))
-            txt = f"{indent}- {txt}"
-        return txt
-
-    def cell_text(cell: _Cell) -> str:
-        parts = []
-        for pr in cell.paragraphs:
-            t = para_to_text(pr)
-            if t:
-                parts.append(t)
-        # join theo khoảng trắng để tránh xuống dòng lặt vặt trong cell
-        return " ".join(parts).strip()
-
-    def dedup_consecutive(vals: List[str]) -> List[str]:
-        out = []
-        for v in vals:
-            if v is None: v = ""
-            v = str(v).strip()
-            if not out or v != out[-1]:
-                out.append(v)
-        return out
-
-    # -- main ----------------------------------------------------------------
     results: List[Dict[str, str]] = []
-
-    for block in iter_block_items(doc):
-        if isinstance(block, Paragraph):
-            text = para_to_text(block)
-            if text:
-                results.append({"type": "paragraph", "content": text})
-
-        elif isinstance(block, Table):
-            rows_2d: List[List[str]] = []
-            for r in block.rows:
-                cells = [cell_text(c) for c in r.cells]
-                # dedup các ô trùng do merge dọc/ngang
-                cells = dedup_consecutive(cells)
-                # bỏ hẳn dòng nếu rỗng toàn bộ
-                if any(c.strip() for c in cells):
-                    rows_2d.append(cells)
-
-            # cân bằng cột (để TSV đều cột hơn chút)
-            if rows_2d:
-                max_cols = max(len(r) for r in rows_2d)
-                padded = [r + [""] * (max_cols - len(r)) for r in rows_2d]
-                tsv = normalize_to_tsv(padded)
-                results.append({"type": "table", "content": tsv})
-
+    for para in doc.paragraphs:
+        text = (para.text or "").strip()
+        if text:
+            results.append({"type": "paragraph", "content": text})
+    for t in doc.tables:
+        rows: List[List[str]] = []
+        for r in t.rows:
+            row_cells = [(c.text or "").strip() for c in r.cells]
+            # loại trùng liên tiếp do merge
+            dedup = []
+            for i, val in enumerate(row_cells):
+                if i == 0 or val != row_cells[i-1]:
+                    dedup.append(val)
+            rows.append(dedup)
+        results.append({"type": "table", "content": normalize_to_tsv(rows)})
     return results
-
 
 # ===== PDF =====
 def preprocess_pil_for_ocr(img: Image.Image) -> Image.Image:
@@ -366,7 +240,7 @@ def read_pdf_text_and_images(
                         if b["content"]:
                             results.append({"type": b["type"], "content": b["content"], "page": idx + 1})
 
-                # bắt bảng trực tiếp từ text layer bằng extract_tables()
+                # [ADD] bắt bảng trực tiếp từ text layer bằng pdfplumber.extract_tables()
                 try:
                     tables = page.extract_tables()
                     for tbl in (tables or []):
@@ -431,7 +305,7 @@ def read_excel_as_tsv_blocks(file_path: Path) -> List[Dict[str, str]]:
             print(f"⚠️ Excel đọc lỗi {file_path.name}: {e}")
     return results
 
-# ===== Cleanup TEXT & TABLE (nhẹ + nâng cấp) =====
+# ===== Cleanup TEXT & TABLE (nhẹ + [ADD] clean mạnh) =====
 def sanitize_text_block(text: str, yaml_rules: dict) -> Tuple[str, List[str]]:
     warnings = []
     cfg = (yaml_rules or {}).get("text_cleanup", {}) or {}
@@ -464,13 +338,13 @@ def sanitize_text_block(text: str, yaml_rules: dict) -> Tuple[str, List[str]]:
                 kept.append(line)
         out = "\n".join(kept)
 
-    # Bỏ số trang dòng đơn: "   5   "
+    # [ADD] Bỏ số trang dòng đơn: "   5   "
     out = "\n".join([ln for ln in out.splitlines() if not re.match(r"^\s*\d+\s*$", ln)])
 
-    # Gỡ gạch nối cuối dòng: "tái- \n bảo" -> "tái bảo"
+    # [ADD] Gỡ gạch nối cuối dòng: "tái- \n bảo" -> "tái bảo"
     out = re.sub(r"-\s*\n\s*", "", out)
 
-    # Nối dòng ngắn với dòng sau (nếu dòng sau bắt đầu chữ thường/số/()
+    # [ADD] Nối dòng ngắn với dòng sau (nếu dòng sau bắt đầu chữ thường/số/()
     lines = out.split("\n")
     merged = []
     for i, ln in enumerate(lines):
@@ -484,9 +358,6 @@ def sanitize_text_block(text: str, yaml_rules: dict) -> Tuple[str, List[str]]:
             merged.append(ln)
     out = "\n".join(merged)
 
-    # Sửa lỗi chính tả phổ biến sau OCR/clean
-    out = re.sub(r"Rất\s+khó\s+xảy\s*xa\b", "Rất khó xảy ra", out, flags=re.I)
-    out = re.sub(r"\bhướng\s*đẫn\b", "hướng dẫn", out, flags=re.I)
     # collapse double newlines
     if cfg.get("collapse_double_newlines", True):
         out = re.sub(r"\n{3,}", "\n\n", out.strip())
@@ -511,14 +382,9 @@ def sanitize_tsv_block(tsv: str, yaml_rules: dict) -> Tuple[str, List[str]]:
         except re.error:
             continue
     for raw in lines:
-        raw = _collapse_spaced_caps(raw)  # khử "G N Ộ Đ C Á T Ự S" → "GNỘĐCÁTỰS"
-        raw = _fix_common_vn_typos_in_tsv(raw)     # [ADD] sửa "xảy xa", ký hiệu sao
-        if _NOISY_ROW_RE.match(raw.strip()):       # [ADD] bỏ dòng rác/đứt dòng
-            continue
         cells = [c.strip() for c in raw.split("\t")]
         if any(rp.search(raw) for rp in patt_list):
             continue
-
         if clean_rules.get("drop_if_all_empty", True):
             if all((c == "" for c in cells)): continue
         if clean_rules.get("trim_cells", True):
@@ -660,9 +526,6 @@ def process_file(
 
         elif ext == ".pdf":
             blocks = read_pdf_text_and_images(file_path, page_start, page_end, ocr_lang, ocr_psm)
-            # gộp các bảng vụn 1–2 cột (đặc biệt ở ma trận trang 7)
-            blocks = merge_table_fragments(blocks)
-
             page_table_count: Dict[int, int] = {}
             for b in blocks:
                 btype = b.get("type")
@@ -715,15 +578,39 @@ def process_file(
 
         combined_text = "\n".join([c for c in combined if c.strip()]).strip()
 
+        # NEW: build META thống nhất (schemas.meta) và merge với meta cũ
+        from src.schemas.meta import build_meta
+        from src.utils.ids_meta import base_slug_from_path
+
         lang = detect_language_safe(combined_text)
-        meta.update({
+        base_slug = base_slug_from_path(file_path)
+
+        meta_core = build_meta({
+            "input_path": file_path,
+            "base_slug": base_slug,
+            "page_start": page_start,
+            "page_end": page_end,
+            "clean_text": combined_text,
             "language": lang,
-            "has_table": has_table,
-            "text_sha1": sha1_of_text(combined_text),
-            "page_range_applied": {"start": page_start, "end": page_end} if page_start or page_end else None
+            "class": "strategy",           # Đổi theo ngữ cảnh: 'policy'/'financials'/...
+            "source_type": "document",     # Ví dụ: 'book/strategy','policy','financials'
+            "pipeline": "A1",
+            "pipeline_stage": "text",
+            "has_tables": has_table,
+            "table_count": 0,
+            "extra": {
+                "page_range_applied": (
+                    {"start": page_start, "end": page_end}
+                    if (page_start or page_end) else None
+                )
+            }
         })
+
+        # Giữ các key meta cũ (nếu có), ưu tiên giá trị mới từ meta_core
+        meta = {**meta, **meta_core}
         if postclean_warnings:
             meta["postclean_warnings"] = postclean_warnings
+
 
         return combined_text, meta  # trả text + meta (để caller ghi theo mode Y/N/A)
 

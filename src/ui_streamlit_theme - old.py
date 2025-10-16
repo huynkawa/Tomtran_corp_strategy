@@ -24,19 +24,19 @@ DEFAULT_CFG = {
     "CENTER_AXIS": {
         "ENABLED": True,
         "MODE": "viewport",   # viewport | container
-        "X_PCT": 50,
-        "Y_PCT": 50,
+        "X_PCT": 50,          # ↑ phải | ↓ trái
+        "Y_PCT": 50,          # ↑ dưới | ↓ trên
         "SNAP_TO_GRID": False,
         "GRID_STEP_PX": 8,
     },
 
     # ---------- MÀU SẮC CHUNG ----------
     "COLORS": {
-        "BG": "#FFFFFF",
-        "TEXT": "#1F2328",
+        "BG": "#FFFFFF",      # nền tổng thể
+        "TEXT": "#1F2328",    # màu chữ
         "CARD": "#FFFFFF",
         "LINE": "#E5E7EB",
-        "PRIMARY": "#10A37F",
+        "PRIMARY": "#10A37F", # accent (đã map trong CSS)
     },
 
     # ---------- KIỂU CHỮ ----------
@@ -51,8 +51,8 @@ DEFAULT_CFG = {
     "LAYOUT": {
         "MAIN_MAX_WIDTH_PCT": 100,
         "GUTTER_PX": 0,
-        "SIDEBAR_WIDTH_PCT": 22,   # gần ChatGPT
-        "CHAT_WIDTH_PCT": 78,      # auto-fix nếu tổng >100
+        "SIDEBAR_WIDTH_PCT": 24,
+        "CHAT_WIDTH_PCT": 76,     # ⚠ Tổng ≤100; dưới get_cfg có auto-fix
         "DIVIDER": {
             "SHOW": True,
             "COLOR": "#EEF2F7",
@@ -62,7 +62,7 @@ DEFAULT_CFG = {
         },
     },
 
-    # ---------- HIỆU ỨNG ----------
+    # ---------- HIỆU ỨNG (để tránh KeyError) ----------
     "EFFECTS": {
         "SHADOW": False,
         "BLUR_PX": 0,
@@ -70,6 +70,7 @@ DEFAULT_CFG = {
 
     # ---------- ĐỐI TƯỢNG ----------
     "OBJECTS": {
+        # ==== Sidebar (cột trái) ====
         "SIDEBAR": {
             "ENABLED": True,
             "OFFSET_X": "0px",
@@ -81,28 +82,33 @@ DEFAULT_CFG = {
             "RADIUS_PX": 0,
             "SHADOW": False,
             "PADDING_PX": 14,
+
+            # --- MỐC CỤC BỘ (kế thừa CENTER_AXIS nếu thiếu) ---
             "AXIS": {
-                "INHERIT": True,
-                "MODE": "inherit",
-                "X_PCT": 50,
+                "INHERIT": True,         # true: kế thừa X/Y/MODE nếu thiếu
+                "MODE": "inherit",       # inherit | viewport | container
+                "X_PCT": 50,             # % tâm theo box sidebar
                 "Y_PCT": 50,
-                "OFFSET_X_PX": 0,
+                "OFFSET_X_PX": 0,        # dịch thêm từ tâm (px)
                 "OFFSET_Y_PX": 0,
-                "SCALE_X": 1.0,
+                "SCALE_X": 1.0,          # thu-phóng quanh tâm cục bộ
                 "SCALE_Y": 1.0,
             },
+
+            # --- DIVIDER cục bộ bám mốc Sidebar ---
             "DIVIDER": {
-                "USE_LOCAL": True,
+                "USE_LOCAL": True,       # true: dùng divider của sidebar (ưu tiên)
                 "SHOW": True,
-                "BASE_ON_AXIS": True,
-                "OFFSET_X_PX": 0,
+                "BASE_ON_AXIS": True,    # true: neo tại X_PCT của AXIS; false: neo theo cạnh
+                "OFFSET_X_PX": 0,        # dịch từ mốc (px)
                 "COLOR": "#EEF2F7",
                 "STYLE": "solid",
                 "WIDTH_PX": 1,
-                "ORIGIN_EDGE": "right",
+                "ORIGIN_EDGE": "right",  # chỉ dùng khi BASE_ON_AXIS=false
             },
         },
 
+        # ==== Chat panel (cột phải) ====
         "CHAT_PANEL": {
             "ENABLED": True,
             "OFFSET_X": "0px",
@@ -114,12 +120,13 @@ DEFAULT_CFG = {
             "RADIUS_PX": 0,
             "SHADOW": False,
             "PADDING_PX": 0,
-            "CHAT_MAX_WIDTH_PX": 880,
+            "CHAT_MAX_WIDTH_PX": 880,   # cột giữa giống ChatGPT
             "CHAT_HEIGHT_VH_DESKTOP": 72,
             "CHAT_HEIGHT_VH_MOBILE": 68,
+
             "AXIS": {
                 "INHERIT": True,
-                "MODE": "inherit",
+                "MODE": "inherit",       # inherit | viewport | container
                 "X_PCT": 50,
                 "Y_PCT": 50,
                 "OFFSET_X_PX": 0,
@@ -129,17 +136,19 @@ DEFAULT_CFG = {
             },
         },
 
+        # ==== Ô nhập chat ====
         "CHAT_INPUT": {
             "ENABLED": True,
             "WIDTH_PCT": 100,
-            "OFFSET_X": "0px",
+            "OFFSET_X": "0px",           # khi đã có chat
             "OFFSET_Y": "0px",
-            "EMPTY_OFFSET_VH": -30,
+            "EMPTY_OFFSET_VH": -30,      # khi chưa có chat: kéo lên
             "BG": "#F7F7F8",
             "BORDER_COLOR": "#E5E7EB",
             "BORDER_PX": 1,
             "RADIUS_PX": 999,
             "STICKY_BOTTOM_PX": 20,
+
             "AXIS": {
                 "INHERIT": True,
                 "MODE": "inherit",
@@ -152,6 +161,7 @@ DEFAULT_CFG = {
             },
         },
 
+        # ==== Bong bóng ====
         "BUBBLE_USER": {
             "ENABLED": True,
             "BG": "#E7F0FF",
@@ -170,6 +180,7 @@ DEFAULT_CFG = {
         },
     },
 
+    # ---------- THÀNH PHẦN BỔ TRỢ ----------
     "COMPONENTS": {
         "HIDE_STREAMLIT_CHROME": True,
         "EMPTY_STATE": {
@@ -184,7 +195,11 @@ DEFAULT_CFG = {
     },
 }
 
+# =======================
+# Deep merge
+# =======================
 def deep_update(base: dict, override: dict) -> dict:
+    """Deep-merge override -> base (không phá cấu trúc)."""
     out = dict(base)
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -204,10 +219,14 @@ def _load_yaml_from_candidates(cands):
                 pass
     return {}
 
+# =======================
+# Public API
+# =======================
 def get_cfg(yaml_path: str | None = None) -> dict:
     """
     Trả về cấu hình UI đã deep-merge với DEFAULT_CFG.
     - Tự sửa % nếu SIDEBAR + CHAT > 100 (để không bể layout).
+    - Chịu thiếu khóa an toàn.
     """
     if yaml_path:
         user_cfg = _load_yaml_from_candidates([yaml_path])

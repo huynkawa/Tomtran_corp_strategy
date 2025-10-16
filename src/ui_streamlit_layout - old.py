@@ -1,8 +1,7 @@
 # src/ui_streamlit_layout.py
 import streamlit as st
 from src.ui_streamlit_theme import get_cfg
-
-# Luôn mở sidebar khi vào trang (Streamlit hay nhớ trạng thái trước đó)
+# Ép sidebar mở sẵn mỗi lần load (Streamlit hay nhớ trạng thái lần trước)
 try:
     st.set_page_config(layout="wide", initial_sidebar_state="expanded")
 except Exception:
@@ -38,16 +37,17 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
     ax_ch = _resolve_axis(ca, ch)
     ax_in = _resolve_axis(ca, ci)
 
-    # Z-index (cho phép override ở OBJECTS.*.Z_INDEX)
+    # ----- z-index lấy từ YAML -----
     z_base    = int(layers.get("BASE", 0))
     z_header  = int(layers.get("HEADER", 80))
     z_chat    = int(ch.get("Z_INDEX", layers.get("CHAT", 100)))
     z_sidebar = int(sb.get("Z_INDEX", layers.get("SIDEBAR", 200)))
-    sb_div    = (sb.get("DIVIDER") or {})
+    # divider: ưu tiên override ở SIDEBAR.DIVIDER.Z_INDEX
+    sb_div = (sb.get("DIVIDER") or {})
     z_divider = int(sb_div.get("Z_INDEX", layers.get("DIVIDER", 210)))
-    z_input   = int(ci.get("Z_INDEX", layers.get("INPUT", 900)))
-    z_ovl     = int(layers.get("OVERLAY", 950))
-    z_toggle  = int(layers.get("TOGGLE", 10000))
+    z_input  = int(ci.get("Z_INDEX", layers.get("INPUT", 900)))
+    z_ovl    = int(layers.get("OVERLAY", 950))
+    z_toggle = int(layers.get("TOGGLE", 10000))
 
     # Divider global (fallback)
     divider_g = (ly.get("DIVIDER") or {})
@@ -56,7 +56,7 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
     divider_style_g = divider_g.get("STYLE", "solid")
     divider_w_g = int(divider_g.get("WIDTH_PX", 1))
 
-    # Divider local (sidebar)
+    # Divider local options
     sb_div_use = bool(sb_div.get("USE_LOCAL", False))
     sb_div_show = bool(sb_div.get("SHOW", False))
     sb_div_base_on_axis = bool(sb_div.get("BASE_ON_AXIS", True))
@@ -69,7 +69,7 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
     # Empty state input offset
     input_offset_vh = f"{ci.get('EMPTY_OFFSET_VH', -30)}vh" if empty_state else None
 
-    # Ẩn chrome: chỉ ẩn menu & footer; giữ header để có nút toggle
+    # Ẩn chrome: chỉ ẩn menu & footer (giữ header để luôn có nút toggle)
     hide_chrome_css = "#MainMenu, footer {visibility: hidden;}" \
         if (cfg.get("COMPONENTS", {}).get("HIDE_STREAMLIT_CHROME")) else ""
 
@@ -78,7 +78,6 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
         if (divider_show_g and not (sb_div_use and sb_div_show)) else ""
     )
 
-    # CSS divider cục bộ cho sidebar
     if sb_div_use and sb_div_show:
         if sb_div_base_on_axis:
             sidebar_local_divider_css = (
@@ -88,16 +87,20 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
                 "transform:translateX(-50%);}"
             )
         else:
-            # neo theo cạnh
+            # --- BASE_ON_AXIS == False: neo theo cạnh ---
             if sb_div_edge == "left":
                 pos = f"left:{int(sb_div_offx)}px;"
             else:
                 pos = f"right:{abs(int(sb_div_offx))}px;"
+
+            # GHÉP CHUỖI AN TOÀN: f-string chỉ cho phần cần chèn biến; dấu '}' kết thúc khối CSS nằm ở string thường
             sidebar_local_divider_css = (
                 "section[data-testid='stSidebar']::after{"
                 f"content:'';position:absolute;top:0;bottom:0;width:{sb_div_w}px;"
-                f"background:{sb_div_color};{pos}transform:none;}}"
+                f"background:{sb_div_color};{pos}transform:none;"
+                "}"
             )
+
     else:
         sidebar_local_divider_css = ""
 
@@ -109,7 +112,6 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
     )
 
     primary = co.get("PRIMARY", "#10A37F")
-    sbw_pct = float(ly.get("SIDEBAR_WIDTH_PCT", 22))  # % viewport
 
     css = f"""
     <style>
@@ -122,7 +124,6 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
         --base: {tp.get('BASE_SIZE_PX', 15)}px;
 
         --chat-max: {ch.get('CHAT_MAX_WIDTH_PX', 880)}px;
-        --sidebar-w: {sbw_pct}vw;
 
         /* AXIS biến cho từng đối tượng */
         --sb-xp: {ax_sb['xp']}%; --sb-yp: {ax_sb['yp']}%; --sb-ofx: {ax_sb['ofx']}px; --sb-ofy: {ax_sb['ofy']}px; --sb-sx: {ax_sb['sx']}; --sb-sy: {ax_sb['sy']};
@@ -147,13 +148,7 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
         font-size: var(--base);
       }}
 
-      /* Container full-width như ChatGPT */
-      .block-container {{
-        padding-top: 0 !important;
-        max-width: 100% !important;
-      }}
-
-      /* Sidebar giống ChatGPT (cố định trái, rộng theo % viewport) */
+      /* Sidebar */
       section[data-testid="stSidebar"] {{
         background: {sb.get('BG', '#0F172A')} !important;
         color: {sb.get('TEXT', '#E2E8F0')} !important;
@@ -163,9 +158,6 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
         transform: translate(var(--sb-ofx), var(--sb-ofy)) scale(var(--sb-sx), var(--sb-sy));
         margin-left: {sb.get('OFFSET_X', '0px')};
         margin-top: {sb.get('OFFSET_Y', '0px')};
-        width: var(--sidebar-w);
-        min-width: var(--sidebar-w);
-        max-width: var(--sidebar-w);
       }}
       section[data-testid="stSidebar"] > div:first-child {{
         padding: {sb.get('PADDING_PX', 14)}px;
@@ -173,10 +165,12 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
       }}
 
       /* Divider local của sidebar */
-      section[data-testid="stSidebar"]::after {{ z-index: var(--z-divider); }}
+      section[data-testid="stSidebar"]::after {{
+        z-index: var(--z-divider);
+      }}
       {sidebar_local_divider_css}
 
-      /* Khung chat giữa giống ChatGPT: cột giữa 880px */
+      /* Khung chat giữa */
       .tt-chat-inner {{
         width: min(100%, var(--chat-max));
         margin-left: auto; margin-right: auto;
@@ -187,11 +181,9 @@ def inject_css_from_cfg(cfg: dict, *, empty_state: bool = False):
       }}
 
       /* Empty state */
-      .tt-empty {{
-        min-height: 40vh; display: grid; place-items: center; text-align: center; margin-top: 10vh;
-      }}
+      .tt-empty {{ min-height: 40vh; display: grid; place-items: center; text-align: center; margin-top: 10vh; }}
 
-      /* Input dính đáy như ChatGPT */
+      /* Input */
       .tt-input-wrap {{
         position: sticky; bottom: {ci.get('STICKY_BOTTOM_PX', 20)}px; margin-top: 16px;
         z-index: var(--z-input);

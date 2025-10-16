@@ -12,11 +12,11 @@ from dotenv import load_dotenv
 load_dotenv(".env.active")
 
 # --- Giao diện ChatGPT style ---
-from src.ui_streamlit_theme import render_page
+from src.ui_streamlit_layout import render_page
 from src.chat_saver import save_chat
 
-# 🚀 Tạo UI và lấy các tham số
-user_msg, temperature, top_p, fallback_general, K, MIN_RELEVANCE, debug_mode, show_system, show_rag = render_page("TOMTRAN AGENT AI")
+# 🚀 Tạo UI và lấy các tham số (GIỮ NGUYÊN THỨ TỰ 9 biến)
+user_msg, temperature, top_p, fallback_general, K, MIN_RELEVANCE, debug_mode, show_system, show_rag = render_page()
 
 # === Load Prompt cấu hình ===
 cfg = load_prompts("prompts/prompts.yaml")

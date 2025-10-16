@@ -1,131 +1,197 @@
-# ================================
-# UI CONFIG (TẤT CẢ Ở YAML)
-# ================================
-
+# ui_streamlit_theme.yaml
 META:
-  VERSION: 1.0
-  NOTES: "Chỉnh mọi thứ ở YAML; code chỉ đọc & render."   # Mô tả: cấu hình tập trung ở YAML
+  VERSION: 2.2
+  NOTES: "Điều khiển UI như ChatGPT; mọi tùy chỉnh làm ở YAML."
 
-CENTER_AXIS:                        # (1) TRỤC TRUNG TÂM TOÀN TRANG
-  ENABLED: true                     # Bật/tắt cơ chế neo theo trục trung tâm
-  MODE: viewport                    # viewport=theo màn hình; container=theo khung trung tâm
-  X_PCT: 50                         # (X) 0..100: 50 là chính giữa ngang
-  Y_PCT: 50                         # (Y) 0..100: 50 là chính giữa dọc
-  SNAP_TO_GRID: false               # Bật thì neo các đối tượng theo lưới
-  GRID_STEP_PX: 8                   # Bước lưới (px) khi SNAP_TO_GRID=true
+OBJECTS_INDEX:
+  SIDEBAR: "Cột trái (menu, điều khiển)"
+  CHAT_PANEL: "Cột chat (khung nội dung giống ChatGPT)"
+  CHAT_INPUT: "Ô nhập tin nhắn (pill ở dưới/giữa khi rỗng)"
+  BUBBLE_USER: "Bong bóng tin người dùng"
+  BUBBLE_BOT: "Bong bóng tin bot"
 
-COLORS:                             # (2) MÀU NỀN & CHỮ CHÍNH
-  BG:   "#FFFFFF"                   # Nền tổng thể app
-  TEXT: "#0B1520"                   # Màu chữ mặc định
-  CARD: "#FFFFFF"                   # Nền thẻ/vùng nội dung (chat panel, card)
-  LINE: "#E5E7EB"                   # Màu đường kẻ/đường phân cách
+CENTER_AXIS:
+  ENABLED: true
+  MODE: viewport
+  X_PCT: 50
+  Y_PCT: 50
+  SNAP_TO_GRID: false
+  GRID_STEP_PX: 8
+
+COLORS:
+  BG:   "#FFFFFF"
+  TEXT: "#1F2328"
+  CARD: "#FFFFFF"
+  LINE: "#E5E7EB"
+  PRIMARY: "#10A37F"
 
 TYPOGRAPHY:
-  BASE_SIZE_PX: 15                  # Cỡ chữ cơ sở (ảnh hưởng rem)
-  TITLE_SIZE_PX: 20                 # Cỡ chữ tiêu đề chính (px)
-  FONT_FAMILY: "Inter, Roboto, system-ui, -apple-system, Segoe UI, Arial"  # Font stack
+  FONT_FAMILY: "Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
+  BASE_SIZE_PX: 15
+  TITLE_SIZE_PX: 20
+  LINE_HEIGHT: 1.55
 
-LAYOUT:                             # (3) BỐ CỤC CHÍNH & ĐƯỜNG KẺ NGĂN
-  MAIN_MAX_WIDTH_PCT: 96            # Bề rộng tối đa khối trung tâm (% viewport) – ảnh hưởng căn giữa ngang
-  GUTTER_PX: 0                      # Khoảng cách rãnh hai bên (px)
-  SIDEBAR_WIDTH_PCT: 30             # Bề rộng sidebar (% khối trung tâm)
-  CHAT_WIDTH_PCT: 82                # Bề rộng cột chat (% khối trung tâm)
+LAYERS:
+  BASE: 0
+  HEADER: 80
+  CHAT: 100
+  SIDEBAR: 500
+  DIVIDER: 210
+  INPUT: 100
+  OVERLAY: 950
+  TOGGLE: 10000
+
+LAYOUT:
+  MAIN_MAX_WIDTH_PCT: 100
+  GUTTER_PX: 0
+  SIDEBAR_WIDTH_PCT: 22     # gần ChatGPT
+  CHAT_WIDTH_PCT: 78
   DIVIDER:
-    SHOW: true                      # Hiện/ẩn đường kẻ ngăn khu (ví dụ giữa sidebar và chat)
-    COLOR: "#E5E7EB"                # Màu đường kẻ
-    STYLE: "solid"                  # Kiểu đường: solid | dashed | dotted
-    WIDTH_PX: 1                     # Độ dày đường kẻ (px)
-    OFFSET_X_PX: 0                  # (X) Dịch đường kẻ trái/→ phải (px)
+    SHOW: true
+    COLOR: "#EEF2F7"
+    STYLE: "solid"
+    WIDTH_PX: 1
+    OFFSET_X_PX: 0
 
-OBJECTS:                            # (4,5) TỪNG ĐỐI TƯỢNG + DỊCH CHUYỂN/STYLE RIÊNG
+EFFECTS:
+  SHADOW: false
+  BLUR_PX: 0
+
+OBJECTS:
   SIDEBAR:
-    ENABLED: true                   # Bật/tắt sidebar
-    OFFSET_X: "-28%"                # (X) Dịch sidebar trái/→ phải (âm = sang trái)
-    OFFSET_Y: "0px"                 # (Y) Dịch sidebar lên/↓ xuống
-    BG: "#0F172A"                   # Nền sidebar
-    TEXT: "#E2E8F0"                 # Màu chữ sidebar
-    BORDER_COLOR: "#0F172A"         # Màu viền sidebar
-    BORDER_PX: 0                    # Độ dày viền sidebar (px)
-    RADIUS_PX: 18                   # Bo góc sidebar (px)
-    SHADOW: true                    # Đổ bóng sidebar
-    PADDING_PX: 10                  # Đệm trong sidebar (px)
+    ENABLED: true
+    Z_INDEX: 220
+    OFFSET_X: "0px"         # Đặt 0 để sidebar không “trôi” mất
+    OFFSET_Y: "0px"
+    BG: "#0F172A"
+    TEXT: "#E2E8F0"
+    BORDER_COLOR: "#0F172A"
+    BORDER_PX: 0
+    RADIUS_PX: 0
+    SHADOW: false
+    PADDING_PX: 14
+    AXIS:
+      INHERIT: true
+      MODE: inherit
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0
+      SCALE_Y: 1.0
+    DIVIDER:
+      USE_LOCAL: true
+      SHOW: true
+      Z_INDEX: 230
+      BASE_ON_AXIS: true
+      OFFSET_X_PX: 0
+      COLOR: "#EEF2F7"
+      STYLE: "solid"
+      WIDTH_PX: 1
+      ORIGIN_EDGE: "right"
 
   CHAT_PANEL:
-    ENABLED: true                   # Bật/tắt khu vực chat (lịch sử + nội dung)
-    OFFSET_X: "22%"                 # (X) Dịch chat panel trái/→ phải (dương = sang phải)
-    OFFSET_Y: "0px"                 # (Y) Dịch chat panel lên/↓ xuống
-    BG: "#FFFFFF"                   # Nền khối chat
-    TEXT: "#0B1520"                 # Màu chữ trong khối chat
-    BORDER_COLOR: "#FFFFFF"         # Màu viền khối chat
-    BORDER_PX: 0                    # Độ dày viền khối chat (px)
-    RADIUS_PX: 0                    # Bo góc khối chat (px)
-    SHADOW: false                   # Đổ bóng khối chat
-    PADDING_PX: 0                   # Đệm trong khối chat (px)
-    CHAT_MAX_WIDTH_PX: 760          # Bề rộng cột giữa “giống ChatGPT” (px)
-    CHAT_HEIGHT_VH_DESKTOP: 72      # (Y) Chiều cao khối chat trên desktop (% chiều cao màn hình)
-    CHAT_HEIGHT_VH_MOBILE: 68       # (Y) Chiều cao khối chat trên mobile (% chiều cao màn hình)
+    ENABLED: true
+    Z_INDEX: 110
+    OFFSET_X: "0px"
+    OFFSET_Y: "0px"
+    BG: "#FFFFFF"
+    TEXT: "#1F2328"
+    BORDER_COLOR: "#FFFFFF"
+    BORDER_PX: 0
+    RADIUS_PX: 0
+    SHADOW: false
+    PADDING_PX: 0
+    CHAT_MAX_WIDTH_PX: 880
+    CHAT_HEIGHT_VH_DESKTOP: 72
+    CHAT_HEIGHT_VH_MOBILE: 68
+    AXIS:
+      INHERIT: true
+      MODE: inherit
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0
+      SCALE_Y: 1.0
 
   CHAT_INPUT:
-    ENABLED: true                   # Bật/tắt ô nhập chat
-    WIDTH_PCT: 100                  # Bề rộng ô nhập (% theo CHAT_MAX_WIDTH_PX hoặc container)
-    OFFSET_X: "0px"                 # (X) Dịch ô nhập trái/→ phải
-    OFFSET_Y: "0px"                 # (Y) Dịch ô nhập lên/↓ xuống (âm = kéo lên gần giữa)
-    BG: "#F7F7F8"                   # Nền ô nhập (xám rất nhạt kiểu ChatGPT)
-    BORDER_COLOR: "#E5E7EB"         # Màu viền ô nhập (xám trung tính)
-    BORDER_PX: 1                    # Độ dày viền ô nhập (px)
-    RADIUS_PX: 999                  # Bo “pill” cho ô nhập (999 = tròn mạnh)
-    STICKY_BOTTOM_PX: 20            # Dính đáy: cách đáy 20px; 0 = không sticky (ô nhập sẽ “lên” theo OFFSET_Y)
+    ENABLED: true
+    Z_INDEX: 900
+    WIDTH_PCT: 100
+    OFFSET_X: "0px"
+    OFFSET_Y: "0px"
+    EMPTY_OFFSET_VH: -30
+    BG: "#F7F7F8"
+    BORDER_COLOR: "#E5E7EB"
+    BORDER_PX: 1
+    RADIUS_PX: 999
+    STICKY_BOTTOM_PX: 20
+    AXIS:
+      INHERIT: true
+      MODE: inherit
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0
+      SCALE_Y: 1.0
 
   BUBBLE_USER:
-    ENABLED: true                   # Bật/tắt bong bóng USER
-    BG: "#E5F1FF"                   # Nền bong bóng USER (xanh nhạt)
-    TEXT: "#0B1520"                 # Màu chữ USER
-    BORDER_COLOR: "#DCEBFF"         # Màu viền bong bóng USER
-    BORDER_PX: 1                    # Độ dày viền USER (px)
-    RADIUS_PX: 18                   # Bo góc bong bóng USER (px)
+    ENABLED: true
+    BG: "#E7F0FF"
+    TEXT: "#0B1520"
+    BORDER_COLOR: "#DCE6FF"
+    BORDER_PX: 1
+    RADIUS_PX: 16
 
   BUBBLE_BOT:
-    ENABLED: true                   # Bật/tắt bong bóng BOT
-    BG: "#FFFFFF"                   # Nền bong bóng BOT
-    TEXT: "#0B1520"                 # Màu chữ BOT
-    BORDER_COLOR: "#E5E7EB"         # Màu viền bong bóng BOT (xám nhạt)
-    BORDER_PX: 1                    # Độ dày viền BOT (px)
-    RADIUS_PX: 18                   # Bo góc bong bóng BOT (px)
+    ENABLED: true
+    BG: "#FFFFFF"
+    TEXT: "#0B1520"
+    BORDER_COLOR: "#E5E7EB"
+    BORDER_PX: 1
+    RADIUS_PX: 16
 
-COMPONENTS:                         # BẬT/TẮT THÀNH PHẦN & NỘI DUNG
-  HIDE_STREAMLIT_CHROME: true       # Ẩn menu/header/footer mặc định của Streamlit
+COMPONENTS:
+  HIDE_STREAMLIT_CHROME: false
   EMPTY_STATE:
-    SHOW: true                      # Hiện màn hình rỗng ban đầu
-    TITLE_HTML: "Tôi có thể giúp được gì, huy?"   # Tiêu đề trạng thái rỗng
-    SUB_HTML: "Hỏi bất kỳ điều gì…"             # Phụ đề trạng thái rỗng
-  SIDEBAR_CONTENT:
-    SHOW: true                      # Hiện nội dung sidebar demo
-    HEADER: "Sidebar"               # Tiêu đề khu sidebar demo
-    ITEMS:                          # Danh sách control demo (đã chuyển YAML hợp lệ)
-      - type: slider
-        label: "Temperature"
-        min: 0.0
-        max: 1.0
-        step: 0.05
-        value: 0.3
-      - type: slider
-        label: "Top-p"
-        min: 0.1
-        max: 1.0
-        step: 0.05
-        value: 1.0
-      - type: toggle
-        label: "Fallback"
-        value: true
-      - type: number
-        label: "Retriever k"
-        min: 1
-        max: 20
-        step: 1
-        value: 6
-      - type: slider
-        label: "Min relevance"
-        min: 0.0
-        max: 1.0
-        step: 0.01
-        value: 0.25
+    SHOW: true
+    TITLE_HTML: "Bạn đang làm về cái gì?"
+    SUB_HTML: "Hỏi bất kỳ điều gì…"
+
+SIDEBAR_CONTENT:
+  SHOW: true
+  SECTIONS:
+    - type: new_chat_button
+      label: "Đoạn chat mới"
+    - type: history
+      label: "Lịch sử đoạn chat"
+    - type: spacer
+    - type: slider
+      label: "Temperature"
+      min: 0.0
+      max: 1.0
+      step: 0.05
+      value: 0.3
+    - type: slider
+      label: "Top-p"
+      min: 0.1
+      max: 1.0
+      step: 0.05
+      value: 1.0
+    - type: toggle
+      label: "Fallback"
+      value: true
+    - type: number
+      label: "Retriever k"
+      min: 1
+      max: 20
+      step: 1
+      value: 6
+    - type: slider
+      label: "Min relevance"
+      min: 0.0
+      max: 1.0
+      step: 0.01
+      value: 0.25

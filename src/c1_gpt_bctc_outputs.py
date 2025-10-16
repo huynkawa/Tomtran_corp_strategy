@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-p1a_gpt_ocr_bctc.py — GPT enhancer cho TABLE (ưu tiên BCTC, đọc ẢNH + đối chiếu PIPE)
+c1_gpt_bctc_outputs— GPT enhancer cho TABLE (ưu tiên BCTC, đọc ẢNH + đối chiếu PIPE)
 - Hàm public: enhance_table_with_gpt(...)
   * Nhận:  table_text_cleaned (PIPE var-cols do code dựng) + image_pil (ROI hoặc cả trang)
   * GPT đọc ẢNH, đối chiếu với PIPE, sửa số liệu theo ẢNH (không bịa), giữ định dạng PIPE

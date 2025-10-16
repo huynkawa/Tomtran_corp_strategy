@@ -1,0 +1,254 @@
+# =========================================================
+# UI THEME — TẤT CẢ CHỈNH Ở YAML
+# - AXIS cục bộ cho từng đối tượng (dịch/scale quanh mốc)
+# - LAYERS: điều khiển thứ tự lớp (z-index) HOÀN TOÀN bằng YAML
+# - Có thể override z-index cho từng OBJECT qua OBJECTS.*.Z_INDEX
+# Ký hiệu đơn vị nhanh:
+#   *_PCT   = phần trăm (%)
+#   *_PX    = pixel (px)
+#   *_VH    = viewport-height (% chiều cao màn hình)
+#   SCALE_* = hệ số (không đơn vị), 1.0 = giữ nguyên
+# =========================================================
+
+META:
+  VERSION: 2.1
+  NOTES: "Chỉ sửa YAML; code đọc & render. Có LAYERS để set z-index."
+
+# ---------------------------------------------------------
+# MỤC LỤC/ĐỊNH NGHĨA ĐỐI TƯỢNG (chỉ để dễ đọc, code không dùng)
+# ---------------------------------------------------------
+OBJECTS_INDEX:
+  SIDEBAR: "Cột trái (menu, điều khiển)"
+  CHAT_PANEL: "Cột chat (khung nội dung giống ChatGPT)"
+  CHAT_INPUT: "Ô nhập tin nhắn (pill ở dưới/giữa khi rỗng)"
+  BUBBLE_USER: "Bong bóng tin người dùng"
+  BUBBLE_BOT: "Bong bóng tin bot"
+  DIVIDER_GLOBAL: "Đường kẻ giữa 2 cột (fallback toàn cục)"
+  SIDEBAR.DIVIDER: "Đường kẻ riêng của sidebar (ưu tiên nếu USE_LOCAL=true)"
+
+# ---------------------------------------------------------
+# TRỤC CĂN GIỮA TOÀN TRANG
+# ---------------------------------------------------------
+CENTER_AXIS:
+  ENABLED: true
+  MODE: viewport                  # viewport: theo màn hình | container: theo khung giữa
+  X_PCT: 50                       # 0..100 → 50 là giữa ngang
+  Y_PCT: 50                       # 0..100 → 50 là giữa dọc
+  SNAP_TO_GRID: false
+  GRID_STEP_PX: 8
+
+# ---------------------------------------------------------
+# MÀU SẮC (kèm tên màu)
+# ---------------------------------------------------------
+COLORS:
+  BG:   "#FFFFFF"                 # ⚪ TRẮNG — nền tổng thể
+  TEXT: "#1F2328"                 # ◼ XÁM ĐẬM — chữ thân bài
+  CARD: "#FFFFFF"                 # ⚪ TRẮNG — nền card/panel
+  LINE: "#E5E7EB"                 # ◻ XÁM NHẠT — đường kẻ/viền mặc định
+  PRIMARY: "#10A37F"              # 🟢 XANH ChatGPT — màu nhấn cho slider/toggle
+
+# ---------------------------------------------------------
+# KIỂU CHỮ
+# ---------------------------------------------------------
+TYPOGRAPHY:
+  FONT_FAMILY: "Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
+  BASE_SIZE_PX: 15
+  TITLE_SIZE_PX: 20
+  LINE_HEIGHT: 1.55
+
+# ---------------------------------------------------------
+# LỚP (Z-INDEX) — THAY ĐỔI THỨ TỰ ĐÈ/LỘT LỚP Ở ĐÂY
+# ---------------------------------------------------------
+# Quy ước mặc định (có thể đổi số tuỳ ý):
+#  - BASE: nội dung nền
+#  - HEADER: header Streamlit (nếu hiển thị)
+#  - CHAT: nội dung chat
+#  - SIDEBAR: khối sidebar
+#  - DIVIDER: đường kẻ của sidebar (đặt cao hơn chính sidebar)
+#  - INPUT: ô nhập chat
+#  - OVERLAY: overlay/hướng dẫn
+#  - TOGGLE: nút toggle sidebar
+LAYERS:
+  BASE: 0
+  HEADER: 80
+  CHAT: 100
+  SIDEBAR: 200
+  DIVIDER: 210
+  INPUT: 900
+  OVERLAY: 950
+  TOGGLE: 10000
+
+# ---------------------------------------------------------
+# BỐ CỤC 2 CỘT & DIVIDER TOÀN CỤC
+# ---------------------------------------------------------
+LAYOUT:
+  MAIN_MAX_WIDTH_PCT: 100
+  GUTTER_PX: 0
+  SIDEBAR_WIDTH_PCT: 24           # ↑ Sidebar to | ↓ hẹp (tổng với CHAT ≤ 100)
+  CHAT_WIDTH_PCT: 76
+  DIVIDER:
+    SHOW: true
+    COLOR: "#EEF2F7"              # ◻ xám nhạt hơn | đậm hơn: "#E5E7EB"
+    STYLE: "solid"                # solid | dashed | dotted
+    WIDTH_PX: 1
+    OFFSET_X_PX: 0
+
+# ---------------------------------------------------------
+# HIỆU ỨNG (placeholder tránh thiếu khóa)
+# ---------------------------------------------------------
+EFFECTS:
+  SHADOW: false
+  BLUR_PX: 0
+
+# ---------------------------------------------------------
+# ĐỐI TƯỢNG + MỐC CỤC BỘ (AXIS) — có thể OVERRIDE Z_INDEX nếu muốn
+# ---------------------------------------------------------
+OBJECTS:
+  SIDEBAR:
+    ENABLED: true
+    Z_INDEX: 220                  # (tuỳ chọn) override; nếu bỏ sẽ dùng LAYERS.SIDEBAR
+    OFFSET_X: "100px"               # Dịch nguyên box sidebar: + phải | - trái
+    OFFSET_Y: "0px"               # Dịch nguyên box sidebar: + xuống | - lên
+    BG: "#0F172A"                 # ◼ xám rất đậm — nền
+    TEXT: "#E2E8F0"               # ◻ xám rất nhạt — chữ
+    BORDER_COLOR: "#0F172A"
+    BORDER_PX: 0
+    RADIUS_PX: 0
+    SHADOW: false
+    PADDING_PX: 14
+
+    AXIS:
+      INHERIT: true               # true: kế thừa MODE/X/Y từ CENTER_AXIS nếu để 'inherit'
+      MODE: inherit               # inherit | viewport | container
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0              # Dịch quanh mốc (px)
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0                # Thu-phóng quanh mốc
+      SCALE_Y: 1.0
+
+    DIVIDER:
+      USE_LOCAL: true
+      SHOW: true
+      Z_INDEX: 230                # (tuỳ chọn) override; nếu bỏ sẽ dùng LAYERS.DIVIDER
+      BASE_ON_AXIS: true          # true: neo theo mốc AXIS.X_PCT
+      OFFSET_X_PX: 0
+      COLOR: "#EEF2F7"
+      STYLE: "solid"
+      WIDTH_PX: 1
+      ORIGIN_EDGE: "right"        # dùng khi BASE_ON_AXIS=false (left|right)
+
+  CHAT_PANEL:
+    ENABLED: true
+    Z_INDEX: 110                  # (tuỳ chọn) override; nếu bỏ sẽ dùng LAYERS.CHAT
+    OFFSET_X: "0px"
+    OFFSET_Y: "0px"
+    BG: "#FFFFFF"
+    TEXT: "#1F2328"
+    BORDER_COLOR: "#FFFFFF"
+    BORDER_PX: 0
+    RADIUS_PX: 0
+    SHADOW: false
+    PADDING_PX: 0
+    CHAT_MAX_WIDTH_PX: 880
+    CHAT_HEIGHT_VH_DESKTOP: 72
+    CHAT_HEIGHT_VH_MOBILE: 68
+
+    AXIS:
+      INHERIT: true
+      MODE: inherit
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0
+      SCALE_Y: 1.0
+
+  CHAT_INPUT:
+    ENABLED: true
+    Z_INDEX: 900                  # (tuỳ chọn) override; nếu bỏ sẽ dùng LAYERS.INPUT
+    WIDTH_PCT: 600
+    OFFSET_X: "0px"               # Khi đã có chat (trạng thái bình thường)
+    OFFSET_Y: "0px"
+    EMPTY_OFFSET_VH: -30          # Khi chưa có chat: kéo input lên gần giữa
+    BG: "#F7F7F8"
+    BORDER_COLOR: "#0B1520"
+    BORDER_PX: 1
+    RADIUS_PX: 999
+    STICKY_BOTTOM_PX: 20
+    ALIGN: right
+
+    AXIS:
+      INHERIT: true
+      MODE: inherit
+      X_PCT: 50
+      Y_PCT: 50
+      OFFSET_X_PX: 0
+      OFFSET_Y_PX: 0
+      SCALE_X: 1.0
+      SCALE_Y: 1.0
+
+  BUBBLE_USER:
+    ENABLED: true
+    BG: "#E7F0FF"                 # 🔵 xanh nhạt
+    TEXT: "#0B1520"               # ◼ xám đậm
+    BORDER_COLOR: "#DCE6FF"       # 🔵 viền xanh nhạt
+    BORDER_PX: 1
+    RADIUS_PX: 16
+
+  BUBBLE_BOT:
+    ENABLED: true
+    BG: "#FFFFFF"                 # ⚪ trắng
+    TEXT: "#0B1520"               # ◼ xám đậm
+    BORDER_COLOR: "#E5E7EB"       # ◻ xám nhạt
+    BORDER_PX: 1
+    RADIUS_PX: 16
+
+# ---------------------------------------------------------
+# THÀNH PHẦN BỔ TRỢ
+# ---------------------------------------------------------
+COMPONENTS:
+  HIDE_STREAMLIT_CHROME: false     # true: ẩn menu + footer; header sẽ ĐƯỢC GIỮ lại bởi code
+  EMPTY_STATE:
+    SHOW: true
+    TITLE_HTML: "Bạn đang làm về cái gì?"
+    SUB_HTML: "Hỏi bất kỳ điều gì…"
+
+# ---------------------------------------------------------
+# SIDEBAR dựng từ YAML — SECTIONS
+# ---------------------------------------------------------
+SIDEBAR_CONTENT:
+  SHOW: true
+  SECTIONS:
+    - type: new_chat_button
+      label: "Đoạn chat mới"
+    - type: history
+      label: "Lịch sử đoạn chat"
+    - type: spacer
+    - type: slider
+      label: "Temperature"
+      min: 0.0
+      max: 1.0
+      step: 0.05
+      value: 0.3
+    - type: slider
+      label: "Top-p"
+      min: 0.1
+      max: 1.0
+      step: 0.05
+      value: 1.0
+    - type: toggle
+      label: "Fallback"
+      value: true
+    - type: number
+      label: "Retriever k"
+      min: 1
+      max: 20
+      step: 1
+      value: 6
+    - type: slider
+      label: "Min relevance"
+      min: 0.0
+      max: 1.0
+      step: 0.01
+      value: 0.25
