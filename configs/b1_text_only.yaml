@@ -1,0 +1,138 @@
+# ===============================================================
+# a1_text_only_rules.yaml
+# Mục tiêu:
+# - Áp cho tài liệu "text only" (sách chiến lược, guideline, policy…)
+# - Không can thiệp bảng (bảng do rules_table_universal.yaml xử lý)
+# - Mặc định TẮT GPT cho TEXT để tránh sinh mô tả/boilerplate
+# - Hỗ trợ auto-heading nhẹ theo regex, làm sạch OCR cơ bản
+# ===============================================================
+
+meta:
+  version: 1.2
+  type: "text_only"
+  description: >
+    Quy tắc làm sạch & chuẩn hoá văn bản thuần. Không biến đổi nội dung, không tóm tắt.
+    Dùng kèm với rules_table_universal.yaml cho phần bảng.
+
+# ---------------------------------------------------------------
+# 1) Mặc định / cờ điều khiển
+# ---------------------------------------------------------------
+defaults:
+  company: "UIC"              # tuỳ chỉnh
+  class: "policy"             # gợi ý phân loại chung (policy/guideline/strategy/uw/kpi…)
+  language_hint: "vi"         # gợi ý ngôn ngữ
+  enable_paragraph_gpt: false # *** TẮT GPT-Text mặc định ***
+  apply_heading_autofix: true # bật auto chèn heading dựa vào regex bên dưới (nếu khớp)
+  table_min_cols: 2           # để runner truyền meta thống nhất (dù text-only, giữ cho đồng bộ)
+  table_max_cols: 40
+
+# ---------------------------------------------------------------
+# 2) Ánh xạ theo tên file (ghi đè defaults)
+#    - match là regex (không phân biệt hoa/thường)
+# ---------------------------------------------------------------
+files:
+  - match: "(?i)appendix\\s*6.*retention"
+    class: "uw"
+    appendix_id: "Appendix 6"
+    enable_paragraph_gpt: false
+  - match: "(?i)appendix\\s*21"
+    class: "uw"
+    appendix_id: "Appendix 21"
+    enable_paragraph_gpt: false
+  - match: "(?i)kpi|scorecard|bsc"
+    class: "kpi"
+    enable_paragraph_gpt: false
+  - match: "(?i)exam|timeslot|schedule"
+    class: "schedule"
+    enable_paragraph_gpt: false
+
+# ---------------------------------------------------------------
+# 3) Làm sạch văn bản (OCR cleanup)
+# ---------------------------------------------------------------
+text_cleanup:
+  # Loại bỏ dòng rỗng, số trang, ký tự rác
+  remove_patterns:
+    - "^\\s*$"                    # dòng trống
+    - "(?i)^page\\s*\\d+\\s*$"    # số trang
+    - "^\\W+$"                    # toàn ký tự đặc biệt
+    - "^[•·]{1,}\\s*$"            # bullet đơn lẻ
+
+  # Thay thế/loại bỏ ký tự gây nhiễu
+  strip_characters:
+    - "\\u00A0"   # NBSP
+    - "\\t"
+    - "\\r"
+
+  # Chuẩn hoá khoảng trắng
+  normalize_spaces: true
+  collapse_double_newlines: true
+
+  # Ghép dòng bị gãy do OCR (nhẹ)
+  join_hyphen_breaks: true       # nối từ bị ngắt bằng dấu '-' ở cuối dòng
+  join_short_lines: true         # nối dòng quá ngắn với dòng sau nếu không kết thúc câu
+
+# ---------------------------------------------------------------
+# 4) Auto-Heading nhẹ (chỉ chèn nhãn heading nếu chưa có)
+#    - key = "Heading muốn xuất hiện"
+#    - value = regex để nhận diện vị trí nên chèn heading (tìm câu mở đầu đoạn)
+# ---------------------------------------------------------------
+heading_patterns:
+  "APPENDIX 6 - RETENTION GUIDELINE": "(?mi)^\\s*Retention\\s+Guideline\\b.*$"
+  "APPENDIX 21 - UW MANUAL": "(?mi)^\\s*(Underwriting\\s+Manual|UW\\s+Manual)\\b.*$"
+  "OBJECTIVES": "(?mi)^\\s*(Objectives?|Mục\\s*tiêu)\\b.*$"
+  "INDICATORS": "(?mi)^\\s*(Indicators?|Chỉ\\s*số)\\b.*$"
+  "ACTIONS": "(?mi)^\\s*(Actions?|Biện\\s*pháp)\\b.*$"
+  "SCOPE": "(?mi)^\\s*(Scope|Phạm\\s*vi)\\b.*$"
+  "DEFINITIONS": "(?mi)^\\s*(Definitions?|Định\\s*nghĩa)\\b.*$"
+
+# ---------------------------------------------------------------
+# 5) Prompt dành cho TEXT (chỉ dùng khi enable_paragraph_gpt=true)
+#    - Mặc định tắt, để nguyên văn bản; nếu bật, chỉ clean nhẹ, KHÔNG tóm tắt
+# ---------------------------------------------------------------
+gpt_prompt:
+  common: >
+    Bạn là biên tập viên OCR. Hãy làm sạch đoạn văn: sửa lỗi OCR nhỏ, nối dòng gãy,
+    giữ nguyên ý, KHÔNG thêm/bớt nội dung, KHÔNG chuyển sang bảng/markdown.
+    Trả ra văn bản sạch, thuần text.
+
+  paragraph_with_headings: >
+    Nếu phát hiện thiếu heading quan trọng theo ngữ cảnh (Objectives/Indicators/Actions/Scope…),
+    chỉ chèn đúng dòng heading, KHÔNG thêm mô tả/nhận xét. Không dịch thuật ngữ chuyên ngành.
+
+policy:
+  no_hallucination: true
+  keep_units: true
+  no_translation: true
+  allow_reformat_only: true
+  forbid_summary: true
+
+# ---------------------------------------------------------------
+# 6) Phân loại nhẹ (gợi ý cho meta; runner có thể dùng)
+# ---------------------------------------------------------------
+doc_classification:
+  kpi_keywords: ["KPI", "Indicator", "Scorecard", "BSC", "Objective", "Target", "Action"]
+  uw_keywords: ["Underwriting", "UW", "Retention", "Authority", "Manual", "Guideline"]
+  policy_keywords: ["Policy", "Procedure", "Guideline", "Instruction", "Quy định", "Quy trình"]
+
+# ---------------------------------------------------------------
+# 7) Bộ lọc boilerplate (tuỳ chọn)
+#    - Các dòng trùng/đoạn không liên quan chung chung sẽ bị loại
+# ---------------------------------------------------------------
+boilerplate_filters:
+  drop_lines_matching:
+    - "(?i)^\\s*(Tài\\s*liệu|Văn\\s*bản)\\s+này\\s+(quy\\s*định|hướng\\s*dẫn).*lưu\\s*trữ.*$"
+    - "(?i)^\\s*This\\s+document\\s+provides\\s+general\\s+guidance.*$"
+  deduplicate_consecutive_headings: true
+
+# ---------------------------------------------------------------
+# 8) Xuất metadata bổ sung (để vector store lọc dễ)
+# ---------------------------------------------------------------
+output_format:
+  include_metadata: true
+  metadata_fields:
+    - source_path
+    - appendix_id
+    - company
+    - class
+    - language
+    - rules_version

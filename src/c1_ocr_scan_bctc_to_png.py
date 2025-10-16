@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-src/p1_prelight_ocr.py — P1: Prelight OCR (deskew + crop margins + binarize)
+src/c1_ocr_scan_to_png_bctc.py — P1: Prelight OCR (deskew + crop margins + binarize)
 Chạy trước khi OCR chính để tạo ảnh sạch cho bước sau.
 
 - Hỗ trợ PDF & ảnh (PNG/JPG/TIF)
@@ -29,8 +29,8 @@ except Exception:
     convert_from_path = None
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (Windows) =========
-DEFAULT_IN  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\a1_p1_prelight_ocr_bctc_SCAN"
-DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1_prelight_ocr_bctc"
+DEFAULT_IN  = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\inputs\c_scan_inputs_test"
+DEFAULT_OUT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\c1_ocr_scan_bctc_to_png"
 POPPLER_PATH = os.environ.get("POPPLER_PATH", None)  # set nếu cần
 
 # ========= TIỆN ÍCH =========

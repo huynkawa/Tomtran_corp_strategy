@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-src/p1a_clean10_ocr_bctc.py — OCR từ ảnh prelight (ưu tiên _bin.png) → TXT + META
+src/c2_ocr_scan_bctc_output.py — OCR từ ảnh prelight (ưu tiên _bin.png) → TXT + META
 
 Mục tiêu:
 - Đọc ảnh đã qua prelight (deskew/crop/binarize) để OCR bền vững hơn so với render PDF trực tiếp.
@@ -19,7 +19,7 @@ Yêu cầu:
   + Đã cài Tesseract (tesseract.exe có trong PATH hoặc đặt env TESSERACT_CMD)
 """
 from __future__ import annotations
-import os, re, glob, json, argparse, hashlib
+import os, re, glob, json, argparse, hashlib, shutil
 from typing import Optional, Tuple, Dict, List
 
 import numpy as np
@@ -33,19 +33,43 @@ import yaml
 # Cho phép override qua ENV, nếu không thì dùng đường dẫn bạn cung cấp:
 YAML_TEXT_PATH  = os.getenv(
     "P1A_YAML_TEXT",
-    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_text.yaml"
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\c2_ocr_scan_bctc_text.yaml"
 )
 YAML_TABLE_PATH = os.getenv(
     "P1A_YAML_TABLE",
-    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_clean10_ocr_bctc_table.yaml"
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\c2_ocr_scan_bctc_table.yaml"
 )
 
 # ---- RATIOS YAML (tuỳ chọn) ----
 YAML_RATIO_PATH = os.getenv(
     "P1A_YAML_RATIO",
-    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_ratios_bctc.yaml"
+    r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\c2_ocr_scan_bctc_ratios.yaml"
 )
-_yaml_cache = {"text": None, "table": None, "ratio": None}  # ← mở rộng cache (đổi dòng cũ)
+
+# --- Print config only once ---
+_CONFIG_PRINTED = False
+
+def _print_config_once(args):
+    """In cấu hình P1A đúng 1 lần."""
+    global _CONFIG_PRINTED
+    if _CONFIG_PRINTED:
+        return
+    _CONFIG_PRINTED = True
+    print("=== CẤU HÌNH (P1A prelight OCR) ===")
+    print(f"📂 PRELIGHT_DIR : {args.prelight_dir}")
+    print(f"📦 OUTPUT_DIR   : {args.out}")
+    print(f"📝 YAML_TEXT    : {YAML_TEXT_PATH}")
+    print(f"📐 YAML_TABLE   : {YAML_TABLE_PATH}")
+    print(f"🧮 YAML_RATIOS  : {YAML_RATIO_PATH}")
+    print(f"🔤 OCR_LANG     : {args.ocr_lang}")
+    print(f"⚙️  OCR_CFG      : {args.ocr_cfg}")
+    print(f"🧭 Pages        : {args.start} → {args.end or 'END'}")
+    print(f"🎯 prefer       : {args.prefer}")
+    print(f"🧹 CLEAN MODE   : {args.clean}  (ask/y/files/a/n)")
+    print("=============================")
+
+# --- YAML cache (duy nhất) ---
+_yaml_cache = {"text": None, "table": None, "ratio": None}
 
 def _load_yaml_ratio():
     if not os.path.isfile(YAML_RATIO_PATH):
@@ -55,11 +79,8 @@ def _load_yaml_ratio():
             _yaml_cache["ratio"] = yaml.safe_load(f) or {}
     return _yaml_cache["ratio"]
 
-_yaml_cache = {"text": None, "table": None}
-
 def _load_yaml_cfg():
     """Load YAML cấu hình chỉ 1 lần (cache). Trả về (cfg_table, cfg_text)."""
-    global _yaml_cache
     # Kiểm tra tồn tại để báo lỗi rõ ràng
     if not os.path.isfile(YAML_TABLE_PATH):
         raise FileNotFoundError(f"Không tìm thấy YAML TABLE: {YAML_TABLE_PATH}")
@@ -76,23 +97,19 @@ def _load_yaml_cfg():
     return _yaml_cache["table"], _yaml_cache["text"]
 
 # [ADD] hỗ trợ clean/append
-import shutil
 APPEND_MODE = False  # sẽ bật True trong main() khi --clean a
 CLEAN_FILES = False  # ⚑ mới: xoá theo từng file trang trong phạm vi start–end
 
 import src.env  # ✅ đảm bảo nạp .env.active và set OPENAI_API_KEY
 
 # === GPT enhancer (module ngoài) + công tắc ngay trong code ===
-from src.p1a_gpt_ocr_bctc import enhance_table_with_gpt as gpt_fix_table
+from src.c2_gpt_bctc_outputs import enhance_table_with_gpt as gpt_fix_table
 
-# none      : không dùng GPT
-# numbers   : chỉ vá con số (đang có sẵn gpt_numbers_only_validate)
-# table_full: GPT đọc *toàn bộ bảng* (code|name|note|end|begin) + QC JSON
-USE_GPT_MODE = os.getenv("P1A_GPT_MODE", "table_full")  # "none" | "numbers" | "table_full"
+USE_GPT = True   # True = BẬT GPT; False = TẮT GPT
 
 # ========= ĐƯỜNG DẪN MẶC ĐỊNH (theo yêu cầu) =========
-PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\\outputs\p1_prelight_ocr_bctc"
-OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\p1a_clean10_ocr_bctc_GPT_80_2"
+PRELIGHT_DIR_DEFAULT = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\\outputs\c1_ocr_scan_bctc_to_png"
+OUTPUT_DIR_DEFAULT   = r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\outputs\c2_ocr_scan_bctc_outputs"
 
 # ========= Cấu hình Tesseract =========
 OCR_LANG_DEFAULT = "vie+eng"
@@ -394,8 +411,6 @@ def reflow_lines_from_tsv_dict(data: Dict[str, List],
 
     return "\n".join(out_lines)
 
-
-# ========= HELPERS: detect/extract table PIPE from text =========
 # ========= HELPERS: detect/extract table PIPE from text =========
 _PIPE_BLOCK_PAT = re.compile(r"<<<PIPE>>>[\s\S]*?<<<END>>>", re.IGNORECASE)
 
@@ -427,53 +442,43 @@ def _extract_pipe_blocks(text: str) -> List[str]:
         blocks.append("\n".join(cur).strip())
     return blocks
 
-
-def _autobuild_pipe_from_text(text_raw: str) -> str | None:
+def _autobuild_pipe_from_text(text: str) -> Optional[str]:
     """
-    Fallback: cố gắng dựng bảng PIPE từ text OCR nếu model không trả <<<PIPE>>>.
-    Bắt các dòng có pattern: CODE ... NAME ... END ... BEGIN (2 số ở cuối dòng).
+    Quét prose OCR để kéo ra các dòng dạng:
+      <code(3 số hoặc 3 số.chỉ mục)> <tên...> <end 1.234.567.890> <begin 1.234.567.890>
+    Trả về chuỗi PIPE (CODE|NAME|NOTE|END|BEGIN) hoặc None nếu bắt được quá ít dòng.
     """
-    if not text_raw:
+    if not text:
         return None
-
-    rows = []
-    # CODE: 3 số (có thể .x) hoặc mục I/II/III/IV/V
-    code_pat = r"(?P<code>(?:\d{3}(?:\.\d+)?|I|II|III|IV|V))\.?"
-    # Số tiền: cho phép ( ) âm, dấu . hoặc , ngăn cách hàng nghìn
-    num_pat  = r"(?P<num>\(?[0-9][0-9\.\,]*\)?)"
-    # Dòng: CODE + tên + 2 số cuối (END, BEGIN)
-    line_re = re.compile(
-        rf"^\s*{code_pat}\s+(?P<name>.*?)\s+{num_pat}\s+{num_pat}\s*$",
+    # số có ít nhất 2 nhóm nghìn (ổn với BCTC)
+    money = r"\d{1,3}(?:[.,]\d{3}){2,}"
+    # code 3 số (có thể có .x) đứng đầu một cụm
+    pat = re.compile(
+        rf"(?P<code>\b\d{{3}}(?:\.\d+)?\b)\s+"
+        rf"(?P<name>[^\n]*?)\s+"
+        rf"(?P<end>{money})\s+"
+        rf"(?P<begin>{money})",
         flags=re.IGNORECASE
     )
 
-    for ln in text_raw.splitlines():
-        m = line_re.match(ln)
-        if not m:
+    rows = []
+    for m in pat.finditer(text):
+        code  = m.group("code").strip()
+        name  = re.sub(r"\s{2,}", " ", m.group("name")).strip(" .:-")
+        end   = m.group("end")
+        begin = m.group("begin")
+        # lọc tên quá ngắn/vô nghĩa
+        if len(name) < 3:
             continue
-        code = (m.group("code") or "").strip()
-        name = (m.group("name") or "").strip()
-        end  = (m.captures("num")[0] if hasattr(m, "captures") else None) or m.group(2)
-        begin= (m.captures("num")[1] if hasattr(m, "captures") else None) or m.group(3)
-        # Làm sạch số nhẹ: đổi , → . cho đồng nhất
-        end   = (end or "").replace(",", ".")
-        begin = (begin or "").replace(",", ".")
-        rows.append((code, name, end, begin))
+        rows.append(f"{code} | {name} |  | {end} | {begin}")
 
-    if len(rows) < 3:
+    if len(rows) < 5:
         return None
 
-    # Render PIPE 5 cột: code|name|note|end|begin
-    out = ["code | name | note | end | begin"]
-    for code, name, end, begin in rows:
-        out.append(f"{code} | {name} |  | {end} | {begin}")
-    return "\n".join(out)
-
-
-
+    header = "code | name | note | end | begin"
+    return header + "\n" + "\n".join(rows)
 
 _NUMERIC_HEAVY = re.compile(r"\d{1,3}(?:[.,]\d{3}){1,}")  # số có nhóm nghìn
-
 
 def _is_numeric_table_like(pipe_block: str) -> bool:
     """Có nhiều số dạng 1.234.567 hoặc 1,234,567 → coi là bảng số liệu."""
@@ -496,8 +501,6 @@ def _replace_block(original_text: str, old_block: str, new_block: str) -> str:
     if m and old_block.strip() in m.group(2):
         return original_text[:m.start(2)] + new_block + original_text[m.end(2):]
     return original_text.rstrip() + "\n\n### [TABLE→GPT CHECK]\n<<<PIPE>>>\n" + new_block + "\n<<<END>>>"
-
-
 
 def gpt_numbers_only_validate(text_raw: str, image_path: Optional[str], meta_partial: dict) -> str:
     """
@@ -522,7 +525,6 @@ def gpt_numbers_only_validate(text_raw: str, image_path: Optional[str], meta_par
                 pipe_blocks = [auto_pipe]
             else:
                 return text_raw
-
 
         out_text = text_raw
         for blk in pipe_blocks:
@@ -549,7 +551,6 @@ def gpt_numbers_only_validate(text_raw: str, image_path: Optional[str], meta_par
                 log_diag=False,
             )
 
-
             if fixed and "|" in fixed and fixed.strip() != blk.strip():
                 out_text = _replace_block(out_text, old_block=blk, new_block=fixed)
 
@@ -558,141 +559,6 @@ def gpt_numbers_only_validate(text_raw: str, image_path: Optional[str], meta_par
     except Exception as e:
         print(f"⚠️ gpt_numbers_only_validate error → fallback: {e}")
         return text_raw
-
-def gpt_table_full_validate(text_raw: str, image_path: Optional[str], meta_partial: dict, yaml_table_cfg: dict) -> str:
-    """
-    GPT đọc *toàn bộ bảng*:
-      - Nhận block văn bản OCR thô + ảnh trang (hoặc ROI)
-      - Trả về đúng 2 khối: <<<PIPE>>> (5 cột) và <<<QC>>> (JSON kiểm tra)
-      - Không đụng tới các đoạn văn bản ngoài bảng
-    """
-    try:
-        if not text_raw:
-            return text_raw
-        if not image_path or not os.path.exists(image_path):
-            return text_raw
-
-        # 1) Lấy các block có bảng (dựa trên dấu |; nếu chưa có, thôi để GPT tự dựng)
-        pipe_blocks = _extract_pipe_blocks(text_raw)
-        candidate_blocks = [b for b in pipe_blocks if _is_numeric_table_like(b)]
-
-        # 2) Chuẩn bị ảnh
-        try:
-            from PIL import Image as _PILImage
-            img = _PILImage.open(image_path).convert("RGB")
-        except Exception as e:
-            print(f"⚠️ Không mở được ảnh cho GPT table_full: {e}")
-            img = None  # vẫn chạy chỉ-Text
-
-        # 3) Prompt cho GPT: yêu cầu xuất đúng định dạng PIPE + QC
-        import base64, json as _json
-        sys_rules = {
-            "must_return": [
-                "Khối 1: <<<PIPE>>> ... <<<END>>>",
-                "Khối 2: <<<QC>>>{json}<<<ENDQC>>>"
-            ],
-            "pipe_schema": ["code","name","note","end","begin"],
-            "code_format": r"^\\d{3}(?:\\.\\d+)?$",
-            "dont_invent_numbers": True
-        }
-        # rút gọn rules cho GPT (chỉ các công thức lớn)
-        g = (yaml_table_cfg or {}).get("globals", {}) or {}
-        bs = (yaml_table_cfg or {}).get("balance_sheet", {}) or {}
-        xrules = []
-        for f in (g.get("cross_formulas") or []):
-            if f.get("end"):
-                xrules.append(f.get("end"))
-            if f.get("begin"):
-                xrules.append(f.get("begin"))
-        # alias code phổ biến
-        code_aliases = (g.get("code_aliases") or {})
-        name_aliases = (g.get("name_aliases") or {})
-
-        sys_prompt = (
-            "Bạn là trợ lý kiểm bảng tài chính. Hãy đọc BẢNG trong OCR dưới đây, đối chiếu với ảnh, "
-            "chuẩn hoá mã số (### hoặc ###.#), trích cột 'Thuyết minh' (note) nếu thấy. "
-            "Xuất đúng 2 khối: PIPE 5 cột và QC JSON. Không xử lý đoạn văn bản ngoài bảng.\n\n"
-            f"[Schema PIPE] code|name|note|end|begin\n"
-            f"[Code regex] {sys_rules['code_format']}\n"
-            f"[Không bịa số] {sys_rules['dont_invent_numbers']}\n"
-            f"[Công thức tổng kiểm soát] {xrules}\n"
-            f"[Code aliases] {code_aliases}\n"
-            f"[Name aliases] {name_aliases}\n"
-            "Lưu ý: Nếu thấy dạng '1.511' hãy hiểu là '151.1'; '1.512' là '151.2'. "
-            "Nếu không chắc thuyết minh thì để note rỗng và thêm cảnh báo trong QC."
-        )
-
-        user_text_block = (
-            "=== OCR (reflow) TEXT ===\n" + text_raw[:12000] +  # tránh quá dài
-            "\n=== CÁC KHỐI BẢNG THẤY ĐƯỢC (nếu có) ===\n" +
-            ("\n\n-----\n".join(candidate_blocks) if candidate_blocks else "[chưa thấy block PIPE rõ ràng]")
-        )
-
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_text_block},
-        ]
-
-        if img is not None:
-            import io
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Ảnh gốc (để bạn đối chiếu vị trí cột và cột 'Thuyết minh'):"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}" }}
-                ]
-            })
-
-        # 4) Gọi model
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        resp = client.chat.completions.create(
-            model=os.getenv("GPT_OCR_MODEL", "gpt-4o-mini"),
-            messages=messages,
-            temperature=0.0,
-        )
-        out = resp.choices[0].message.content or ""
-
-        # 5) Hợp nhất vào văn bản gốc: chỉ chèn/thay thế phần PIPE/QC, không đụng văn bản ngoài bảng
-        #    - Nếu có <<<PIPE>>> trong output → replace/append
-        new_text = text_raw
-        m_pipe = re.search(r"<<<PIPE>>>([\s\S]*?)<<<END>>>", out, flags=re.S|re.I)
-        if m_pipe:
-            new_pipe = m_pipe.group(1).strip()
-            old_blocks = _extract_pipe_blocks(new_text)
-            if old_blocks:
-                new_text = _replace_block(new_text, old_blocks[0], new_pipe)
-            else:
-                new_text = new_text.rstrip() + "\n\n<<<PIPE>>>\n" + new_pipe + "\n<<<END>>>"
-        else:
-            # Fallback: model không trả <<<PIPE>>> → tự dựng PIPE từ OCR để không “mất bảng”
-            auto_pipe = _autobuild_pipe_from_text(text_raw)
-            if auto_pipe:
-                print("⚠️ Model không trả <<<PIPE>>> – dùng AUTO PIPE fallback.")
-                new_text = new_text.rstrip() + "\n\n<<<PIPE>>>\n" + auto_pipe + "\n<<<END>>>"
-            else:
-                print("⚠️ Model không trả <<<PIPE>>> và không auto-build được PIPE từ OCR.")
-
-
-    
-        # chèn QC nếu có
-        m_qc = re.search(r"<<<QC>>>([\s\S]*?)<<<ENDQC>>>", out, flags=re.S|re.I)
-        if m_qc:
-            qc = m_qc.group(1).strip()
-            new_text = new_text.rstrip() + "\n\n<<<QC>>>\n" + qc + "\n<<<ENDQC>>>"
-
-        return new_text
-
-    except Exception as e:
-        print(f"⚠️ gpt_table_full_validate error → fallback: {e}")
-        return text_raw
-
-
-
-
 
 def _cleanup_number_str(raw: str, g):
     if raw is None: return None
@@ -720,7 +586,7 @@ def _to_amount_or_none(s: str) -> Optional[int]:
         return int(t)
     except Exception:
         return None
-    
+
 def _fix_code_ocr_dots(code: str) -> str:
     """
     Sửa lỗi OCR kiểu 1.511 -> 151.1, 1.512 -> 151.2.
@@ -746,7 +612,6 @@ def _pull_note_from_name(name: str) -> tuple[str, Optional[str]]:
         return left, token
     return s, None
 
-
 def _auto_layout_for_pipe(pipe_block: str):
     # đếm cột ở dòng dài nhất để suy ước L5/L4/L3
     lines = [ln for ln in pipe_block.splitlines() if "|" in ln]
@@ -755,7 +620,6 @@ def _auto_layout_for_pipe(pipe_block: str):
     if cols >= 5: return "L5"
     if cols == 4: return "L4"
     return "L3A"  # tối thiểu 3 cột: name | end | begin
-
 
 def _parse_pipe_to_rows(pipe_block: str, cfg):
     g = (cfg or {}).get("globals", {})
@@ -778,8 +642,6 @@ def _parse_pipe_to_rows(pipe_block: str, cfg):
 
     col_map = layout.get("column_map", DEFAULT_LAYOUTS["L5"]["column_map"])
     fill_missing = (layout.get("fill_missing") or {})
-
-
 
     rows = []
     for ln in pipe_block.splitlines():
@@ -807,9 +669,8 @@ def _parse_pipe_to_rows(pipe_block: str, cfg):
         end   = _cleanup_number_str(_get("end"), g)
         begin = _cleanup_number_str(_get("begin"), g)
 
-        # infer code by name if requested
+        # infer code by name if requested (hiện để trống)
         if not code and layout.get("infer_code_from_name"):
-            # có thể map bằng alias trong cfg.globals.name_aliases / code_name_pairs
             pass
 
         rows.append({
@@ -848,7 +709,6 @@ def _sum_codes(codes: List[str], idx: Dict[str, dict], col: str) -> Optional[int
         total += sign * int(val)
         any_used = True
     return total if any_used else None
-
 
 def _apply_section_rules(rows, cfg_section):
     """Trả về (changed, rows). Áp dụng rules eq vào cả end & begin khi có."""
@@ -980,7 +840,6 @@ def _sum_by_names(names: list, name_idx: Dict[str,list], col: str, cfg_table: di
         any_used = True
     return total if any_used else None
 
-
 def _norm_noacc(s: str) -> str:
     return _strip_accents(s or "")
 
@@ -1075,7 +934,6 @@ def _compute_ratios_from_pipe(
 
     return out
 
-
 def _format_ratios_as_text(items: list[dict]) -> str:
     if not items: return ""
     lines = ["\n### [RATIOS]"]
@@ -1084,7 +942,6 @@ def _format_ratios_as_text(items: list[dict]) -> str:
         b = f"{it['begin']:.4f}" if it.get("begin") is not None else "—"
         lines.append(f"- {it['name']}: END={e} | BEGIN={b}")
     return "\n".join(lines) + "\n"
-
 
 def yaml_validate_and_autofix_pipe(pipe_block: str, cfg: dict) -> str:
     """Parse → apply rules (code-based) → cross formulas → name-based rules → render lại PIPE."""
@@ -1151,9 +1008,6 @@ def yaml_validate_and_autofix_pipe(pipe_block: str, cfg: dict) -> str:
 
     # 4) Xuất lại PIPE (nếu không đổi, trả về như cũ)
     return _rows_to_pipe(rows, cfg)
-
-
-
 
 # ========= OCR 1 ảnh =========
 def ocr_image_to_text_and_meta(img_bgr, ocr_lang: str, ocr_cfg: str) -> Tuple[str, str]:
@@ -1223,7 +1077,6 @@ def detect_report_title_and_statement(text: str):
         return longest, None
     return None, None
 
-
 # ========= Tìm & xử lý ảnh prelight =========
 def find_prelight_pages(prelight_root: str) -> Dict[Tuple[str,int], Dict[str,str]]:
     """
@@ -1245,6 +1098,36 @@ def find_prelight_pages(prelight_root: str) -> Dict[Tuple[str,int], Dict[str,str
         pages.setdefault((base, pg), {})["orig"] = path
     return pages
 
+def apply_yaml_text_rules(text: str, ytext: dict) -> str:
+    """Làm sạch prose theo YAML TEXT: number_cleanup, alias tên/mã, v.v."""
+    if not text or not ytext:
+        return text
+
+    g = (ytext.get("globals") or {})
+
+    # number_cleanup
+    ncl = (g.get("number_cleanup") or {})
+    for ch in (ncl.get("drop_chars") or []):
+        text = text.replace(ch, "")
+    for it in (ncl.get("fix_patterns") or []):
+        try:
+            text = re.sub(it.get("from", ""), it.get("to", ""), text)
+        except re.error:
+            pass
+    if ncl.get("thousand_grouping"):
+        # đổi dấu phẩy nghìn -> chấm
+        text = re.sub(r"(?<=\d),(?=\d{3}\b)", ".", text)
+
+    # alias mã (sửa lỗi OCR mã)
+    for raw, ali in (g.get("code_aliases") or {}).items():
+        text = re.sub(rf"(?<!\d){re.escape(raw)}(?!\d)", ali, text)
+
+    # alias tên (phẳng)
+    for raw, ali in (g.get("name_aliases_flat") or {}).items():
+        text = re.sub(re.escape(raw), ali, text, flags=re.IGNORECASE)
+
+    return text
+
 def process_one_page(out_root: str, base: str, page_no: int,
                      src_img_path: str, ocr_lang: str, ocr_cfg: str,
                      source_pdf: Optional[str] = None) -> None:
@@ -1256,23 +1139,17 @@ def process_one_page(out_root: str, base: str, page_no: int,
     txt, meta_partial_json = ocr_image_to_text_and_meta(bgr, ocr_lang, ocr_cfg)
     meta_partial = json.loads(meta_partial_json)
 
- 
-    # --- GPT pass (tuỳ chế độ) ---
-    if USE_GPT_MODE == "numbers":
-        print("🧠 GPT mode: numbers-only")
+    # --- GPT numbers-only (đối chiếu PNG, chỉ sửa bảng số) ---
+    if USE_GPT:
+        print("🧠 GPT table-check: ON (numbers-only)")
         txt = gpt_numbers_only_validate(txt, src_img_path, meta_partial)
-    elif USE_GPT_MODE == "table_full":
-        print("🧠 GPT mode: table_full (code|name|note|end|begin + QC)")
-        # cần YAML table để GPT biết rule/alias (đã nạp bên dưới)
-        # tạm dùng load sớm 1 bản, lát nữa còn dùng lại
-        cfg_table_for_gpt, _cfg_text_unused = _load_yaml_cfg()
-        txt = gpt_table_full_validate(txt, src_img_path, meta_partial, cfg_table_for_gpt)
     else:
-        print("🧠 GPT mode: none")
-
+        print("🧠 GPT table-check: OFF")
 
     # === YAML VALIDATE/AUTOFIX (chỉ chạy trên các bảng PIPE) ===
     cfg_table, cfg_text = _load_yaml_cfg()          # nạp YAML table/text
+    txt = apply_yaml_text_rules(txt, cfg_text)
+    
     pipe_blocks = _extract_pipe_blocks(txt) or []    # tách block PIPE từ txt
 
     any_changed = False
@@ -1293,7 +1170,6 @@ def process_one_page(out_root: str, base: str, page_no: int,
 
     print("🔧 YAML validator:", "adjusted tables" if any_changed else "no changes")
 
-
     # === RATIOS (tùy chọn) ===
     # Lấy block PIPE số liệu đầu tiên sau khi đã GPT + YAML fix
     first_numeric = None
@@ -1304,21 +1180,10 @@ def process_one_page(out_root: str, base: str, page_no: int,
 
     ratios = []
     if first_numeric:
-        # nạp YAML ratios của bạn
-        try:
-            with open(r"D:\1.TLAT\3. ChatBot_project\1_Insurance_Strategy\configs\p1a_ratios_bctc.yaml", "r", encoding="utf-8") as f:
-                ratio_cfg = yaml.safe_load(f) or {}
-        except Exception as e:
-            print("⚠️ Không đọc được p1a_ratios_bctc.yaml:", e)
-            ratio_cfg = {}
-
-        # tính toán tỉ lệ
+        ratio_cfg = _load_yaml_ratio()
         ratios = _compute_ratios_from_pipe(first_numeric, ratio_cfg, table_cfg=cfg_table)
-        # (tuỳ bạn) – ghi ratios vào meta để tiện dùng sau
-        # meta sẽ tạo bên dưới; tạm thời lưu vào biến tạm để nhét vào meta sau
     else:
         ratios = []
-
 
     # ---- Ghi file (append-only nếu APPEND_MODE=True) ----
     text_path = os.path.join(out_dir, f"{base}_page{page_no}_text.txt")
@@ -1400,7 +1265,6 @@ def run_ocr_on_prelight(prelight_dir: str, out_dir: str,
             _unlink_quiet(text_path)
             _unlink_quiet(meta_path)
 
-
     for (base, pg) in keys:
         cand = mapping[(base, pg)]
         img_path = None
@@ -1428,22 +1292,19 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Ưu tiên dùng ảnh nào (mặc định: bin)")
     p.add_argument("--ocr-lang", type=str, default=OCR_LANG_DEFAULT, help="Ngôn ngữ OCR (mặc định: vie+eng)")
     p.add_argument("--ocr-cfg",  type=str, default=OCR_CFG_DEFAULT,  help="Tesseract config (mặc định: --psm 6)")
-
-
-    # [ADD] hỏi/xoá/append/bỏ qua khi output đã tồn tại
-    
     p.add_argument("--clean", choices=["ask","y","a","n","files"], default="ask",
-            help="ask: hỏi; y: xoá cả thư mục; files: xoá từng file trang trong phạm vi; a: append-only; n: bỏ qua nếu đã tồn tại")
+                   help="ask: hỏi; y: xoá cả thư mục; files: xoá từng file trang trong phạm vi; a: append-only; n: bỏ qua nếu đã tồn tại")
     return p
 
-
 def main():
-    global APPEND_MODE  # phải đứng TRƯỚC mọi phép gán APPEND_MODE trong hàm
+    global APPEND_MODE, CLEAN_FILES  # phải đứng TRƯỚC mọi phép gán trong hàm
 
     args = build_argparser().parse_args()
 
-    # [ADD] Chuẩn bị thư mục output theo --clean
-        
+    # In cấu hình 1 lần
+    _print_config_once(args)
+
+    # Chuẩn bị thư mục output theo --clean
     out_dir = args.out
     if os.path.exists(out_dir):
         choice = args.clean
@@ -1461,24 +1322,12 @@ def main():
         else:
             print("❌ Lựa chọn không hợp lệ → bỏ qua."); return
 
-
     os.makedirs(out_dir, exist_ok=True)
 
-    # [ADD] bật cờ theo chế độ clean
+    # bật cờ theo chế độ clean
     APPEND_MODE = (args.clean == "a")
     CLEAN_FILES = (args.clean == "files")
-    print(f"🧠 USE_GPT (code switch) = {USE_GPT_MODE}")
-
-
-    def _unlink_quiet(path: str) -> None:
-        try:
-            os.remove(path)
-            print(f"🗑️  Xoá: {os.path.basename(path)}")
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            print(f"⚠️ Không xoá được {path}: {e}")
-
+    print(f"🧠 USE_GPT (code switch) = {USE_GPT}")
 
     # Chạy OCR trên ảnh prelight
     run_ocr_on_prelight(
@@ -1492,8 +1341,5 @@ def main():
     )
     print("\n✅ Hoàn tất P1A. Kiểm tra *_text.txt và *_meta.json tại thư mục output.")
 
-
 if __name__ == "__main__":
     main()
-
-
